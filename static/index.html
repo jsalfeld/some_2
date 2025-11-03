@@ -1051,6 +1051,7 @@
 
             const hasAnyArtifacts =
                 (artifacts.reports && artifacts.reports.length > 0) ||
+                (artifacts.reasoning && artifacts.reasoning.length > 0) ||
                 (artifacts.code && artifacts.code.length > 0) ||
                 (artifacts.plots && artifacts.plots.length > 0);
 
@@ -1066,7 +1067,23 @@
                 artifacts.reports.forEach(file => {
                     html += `
                         <div class="artifact-item">
-                            <a href="${API_BASE}/analysis/${currentSessionId}/files/${file.filename}" download>
+                            <a href="${API_BASE}/analysis/${currentSessionId}/files/${file.filename}" target="_blank">
+                                ${file.filename}
+                            </a>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+            }
+
+            // Reasoning
+            if (artifacts.reasoning && artifacts.reasoning.length > 0) {
+                html += '<div class="artifact-section">';
+                html += '<h3>💭 Reasoning</h3>';
+                artifacts.reasoning.forEach(file => {
+                    html += `
+                        <div class="artifact-item">
+                            <a href="${API_BASE}/analysis/${currentSessionId}/files/${file.filename}" target="_blank">
                                 ${file.filename}
                             </a>
                         </div>
@@ -1082,7 +1099,7 @@
                 artifacts.code.forEach(file => {
                     html += `
                         <div class="artifact-item">
-                            <a href="${API_BASE}/analysis/${currentSessionId}/files/${file.filename}" download>
+                            <a href="${API_BASE}/analysis/${currentSessionId}/files/${file.filename}" target="_blank">
                                 ${file.filename}
                             </a>
                         </div>
@@ -1102,8 +1119,8 @@
                                  class="plot-preview"
                                  alt="${file.filename}"
                                  onclick="window.open('${API_BASE}/analysis/${currentSessionId}/files/${file.filename}', '_blank')">
-                            <a href="${API_BASE}/analysis/${currentSessionId}/files/${file.filename}" download>
-                                📥 ${file.filename}
+                            <a href="${API_BASE}/analysis/${currentSessionId}/files/${file.filename}" target="_blank">
+                                🔍 ${file.filename}
                             </a>
                         </div>
                     `;

@@ -580,7 +580,7 @@ async def download_file(session_id: str, filename: str):
     extension = file_path.suffix.lower()
     media_type_map = {
         '.txt': 'text/plain',
-        '.py': 'text/x-python',
+        '.py': 'text/plain',  # Changed to text/plain for better browser rendering
         '.png': 'image/png',
         '.jpg': 'image/jpeg',
         '.jpeg': 'image/jpeg',
@@ -590,11 +590,19 @@ async def download_file(session_id: str, filename: str):
     }
     media_type = media_type_map.get(extension, 'application/octet-stream')
 
-    return FileResponse(
-        path=file_path,
-        filename=filename,
-        media_type=media_type
-    )
+    # For viewable files, don't set filename to allow inline display
+    # Only force download for unknown file types
+    if extension in ['.txt', '.py', '.png', '.jpg', '.jpeg', '.svg', '.pdf']:
+        return FileResponse(
+            path=file_path,
+            media_type=media_type
+        )
+    else:
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type=media_type
+        )
 
 
 @app.get("/analysis/{session_id}/artifacts")
