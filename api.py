@@ -8,10 +8,11 @@ Features:
 - Retrieve result files
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import uuid
@@ -22,8 +23,8 @@ from pathlib import Path
 import shutil
 import os
 
-# Import our statistical agent
-from somesimpleagent import create_statistical_agent, StatisticalAnalysisState
+# Import our statistical agent (v2 with improved reporting)
+from somesimpleagent_v2 import create_statistical_agent, StatisticalAnalysisState
 
 # Initialize FastAPI
 app = FastAPI(
@@ -44,6 +45,16 @@ app.add_middleware(
 # Create static directory if it doesn't exist
 STATIC_DIR = Path("static")
 STATIC_DIR.mkdir(exist_ok=True)
+
+# Setup Jinja2 templates
+templates = Jinja2Templates(directory="static")
+
+# Read API base URL from environment variable
+API_BASE_URL = os.getenv('API_BASE_URL', 'http://localhost:9002')
+
+# Code approval setting - if True, user must approve code before execution
+os.environ['REQUIRE_CODE_APPROVAL'] = 'false'
+REQUIRE_CODE_APPROVAL = os.getenv('REQUIRE_CODE_APPROVAL', 'false').lower() == 'true'
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -167,7 +178,14 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
 
     # Stream execution and update session state in real-time
     final_state = None
+    last_node_name = None
+
     for event in agent.stream(state):
+        # Check if session has been cancelled
+        if sessions[session_id]["status"] == "cancelled":
+            print(f"  Session {session_id[:8]} cancelled by user")
+            return state  # Return current state without completing
+
         # Update session state with latest event
         if event:
             # Extract state from event
@@ -177,6 +195,46 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
                     sessions[session_id]["state"] = node_state
                     sessions[session_id]["updated_at"] = datetime.now().isoformat()
                     final_state = node_state
+                    last_node_name = node_name
+
+                    # If code was just generated and approval is required, wait for approval
+                    if node_name == "write_analysis_code" and REQUIRE_CODE_APPROVAL:
+                        print(f"  Code approval required for session {session_id[:8]}")
+                        sessions[session_id]["status"] = "awaiting_approval"
+                        sessions[session_id]["approval_status"] = "pending"
+                        sessions[session_id]["pending_code"] = node_state.get("code", "")
+                        sessions[session_id]["updated_at"] = datetime.now().isoformat()
+                        save_session_metadata()
+
+                        # Wait for approval (with timeout)
+                        max_wait_seconds = 300  # 5 minutes timeout
+                        wait_interval = 0.5
+                        elapsed = 0
+
+                        while elapsed < max_wait_seconds:
+                            import time
+                            time.sleep(wait_interval)
+                            elapsed += wait_interval
+
+                            approval_status = sessions[session_id].get("approval_status", "pending")
+
+                            if approval_status == "approved":
+                                print(f"  Code approved for session {session_id[:8]}")
+                                sessions[session_id]["status"] = "processing"
+                                break
+                            elif approval_status == "rejected" or sessions[session_id]["status"] == "cancelled":
+                                print(f"  Code rejected or cancelled for session {session_id[:8]}")
+                                return state  # Stop execution
+
+                        if elapsed >= max_wait_seconds:
+                            print(f"  Approval timeout for session {session_id[:8]}")
+                            sessions[session_id]["status"] = "cancelled"
+                            return state
+
+    # Check one more time before finalizing
+    if sessions[session_id]["status"] == "cancelled":
+        print(f"  Session {session_id[:8]} cancelled by user")
+        return state
 
     if final_state is None:
         final_state = agent.invoke(state)
@@ -192,7 +250,7 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
 
     # Save versioned files
     report_content = generate_report_content(final_state)
-    report_filename = f"analysis_report{version_suffix}.txt"
+    report_filename = f"analysis_report{version_suffix}.yml"
     with open(session_dir / report_filename, 'w') as f:
         f.write(report_content)
 
@@ -206,7 +264,7 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
         f.write(final_state.get("code", ""))
 
     # Also save as "latest" (without version) for easy access and backward compatibility
-    with open(session_dir / "analysis_report.txt", 'w') as f:
+    with open(session_dir / "analysis_report.yml", 'w') as f:
         f.write(report_content)
     with open(session_dir / "agent_reasoning.txt", 'w') as f:
         f.write(reasoning_content)
@@ -295,22 +353,12 @@ def generate_reasoning_content(state: StatisticalAnalysisState) -> str:
 # ============================================================================
 
 @app.get("/", response_class=HTMLResponse)
-async def root():
-    """Serve the web UI."""
-    index_path = STATIC_DIR / "index.html"
-    if index_path.exists():
-        with open(index_path, 'r') as f:
-            return f.read()
-    else:
-        return """
-        <html>
-            <body>
-                <h1>Statistical Analysis Agent API</h1>
-                <p>UI not found. Please ensure static/index.html exists.</p>
-                <p><a href="/docs">View API Documentation</a></p>
-            </body>
-        </html>
-        """
+async def root(request: Request):
+    """Serve the web UI with dynamic API_BASE configuration."""
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "api_base_url": API_BASE_URL
+    })
 
 
 @app.get("/api/info")
@@ -354,10 +402,9 @@ async def create_analysis(
         shutil.copyfileobj(file.file, f)
 
     # Initialize state
-    # NOTE: Since code executes with cwd=session_dir, we only need the filename
     initial_state = {
         "task": task,
-        "data_file_path": file.filename,  # Just filename, since cwd will be session_dir
+        "data_file_path": str(file_path),  # Full path so understand_data can access it
         "output_dir": str(session_dir),  # Full path for plots (used in generated code)
         "analysis_objective": "",
         "data_summary": "",
@@ -414,7 +461,7 @@ async def get_status(session_id: str):
     session = get_session(session_id)
     state = session["state"]
 
-    return {
+    response = {
         "session_id": session_id,
         "status": session["status"],
         "created_at": session["created_at"],
@@ -426,6 +473,12 @@ async def get_status(session_id: str):
         "has_errors": bool(state.get("execution_error", "")),
         "reasoning_entries": len(state.get("reasoning_log", []))
     }
+
+    # Include pending code if awaiting approval
+    if session["status"] == "awaiting_approval":
+        response["pending_code"] = session.get("pending_code", "")
+
+    return response
 
 
 @app.get("/analysis/{session_id}/stream")
@@ -581,6 +634,8 @@ async def download_file(session_id: str, filename: str):
     media_type_map = {
         '.txt': 'text/plain',
         '.py': 'text/plain',  # Changed to text/plain for better browser rendering
+        '.yml': 'text/plain',  # YAML as plain text for browser display
+        '.yaml': 'text/plain',
         '.png': 'image/png',
         '.jpg': 'image/jpeg',
         '.jpeg': 'image/jpeg',
@@ -592,7 +647,7 @@ async def download_file(session_id: str, filename: str):
 
     # For viewable files, don't set filename to allow inline display
     # Only force download for unknown file types
-    if extension in ['.txt', '.py', '.png', '.jpg', '.jpeg', '.svg', '.pdf']:
+    if extension in ['.txt', '.py', '.yml', '.yaml', '.png', '.jpg', '.jpeg', '.svg', '.pdf']:
         return FileResponse(
             path=file_path,
             media_type=media_type
@@ -634,7 +689,7 @@ async def list_artifacts(session_id: str):
         if file_path.is_file():
             filename = file_path.name
 
-            if filename.startswith("analysis_report") and filename.endswith(".txt"):
+            if filename.startswith("analysis_report") and (filename.endswith(".txt") or filename.endswith(".yml")):
                 artifacts["reports"].append({
                     "filename": filename,
                     "size": file_path.stat().st_size,
@@ -730,6 +785,92 @@ Be specific and reference the actual results. If the information isn't in the co
     }
 
 
+@app.post("/analysis/{session_id}/stop")
+async def stop_analysis(session_id: str):
+    """
+    Stop/cancel a running analysis.
+
+    This sets a flag that the agent will check to stop execution gracefully.
+    """
+    session = get_session(session_id)
+
+    if session["status"] not in ["processing", "awaiting_approval"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot stop analysis in status: {session['status']}"
+        )
+
+    # Mark session as cancelled
+    session["status"] = "cancelled"
+    session["updated_at"] = datetime.now().isoformat()
+
+    # Save metadata
+    save_session_metadata()
+
+    return {
+        "message": f"Analysis {session_id} stopped",
+        "status": "cancelled"
+    }
+
+
+@app.post("/analysis/{session_id}/approve_code")
+async def approve_code(session_id: str):
+    """
+    Approve the generated code for execution.
+
+    Only works when REQUIRE_CODE_APPROVAL is enabled and session is awaiting approval.
+    """
+    session = get_session(session_id)
+
+    if session["status"] != "awaiting_approval":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Session is not awaiting approval (status: {session['status']})"
+        )
+
+    # Mark as approved
+    session["approval_status"] = "approved"
+    session["status"] = "processing"
+    session["updated_at"] = datetime.now().isoformat()
+
+    # Save metadata
+    save_session_metadata()
+
+    return {
+        "message": "Code approved",
+        "session_id": session_id
+    }
+
+
+@app.post("/analysis/{session_id}/reject_code")
+async def reject_code(session_id: str):
+    """
+    Reject the generated code and stop the analysis.
+
+    Only works when REQUIRE_CODE_APPROVAL is enabled and session is awaiting approval.
+    """
+    session = get_session(session_id)
+
+    if session["status"] != "awaiting_approval":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Session is not awaiting approval (status: {session['status']})"
+        )
+
+    # Mark as rejected and stop
+    session["approval_status"] = "rejected"
+    session["status"] = "cancelled"
+    session["updated_at"] = datetime.now().isoformat()
+
+    # Save metadata
+    save_session_metadata()
+
+    return {
+        "message": "Code rejected, analysis stopped",
+        "session_id": session_id
+    }
+
+
 @app.delete("/analysis/{session_id}")
 async def delete_session(session_id: str):
     """Delete a session and its associated files."""
@@ -805,9 +946,9 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("Statistical Analysis Agent API")
     print("=" * 60)
-    print("\n🌐 Web UI:        http://localhost:8000")
-    print("📚 API Docs:      http://localhost:8000/docs")
-    print("ℹ️  API Info:      http://localhost:8000/api/info")
+    print("\n🌐 Web UI:        http://localhost:9001")
+    print("📚 API Docs:      http://localhost:9001/docs")
+    print("ℹ️  API Info:      http://localhost:9001/api/info")
     print("\n" + "=" * 60 + "\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=9001)
+    uvicorn.run(app, host="0.0.0.0", port=9002)

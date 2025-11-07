@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Statistical Analysis Agent</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', sans-serif;
+            background: #f5f5f5;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background: #2c3e50;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 2px solid #34495e;
+        }
+
+        .sidebar-header h1 {
+            font-size: 18px;
+        }
+
+        .sidebar-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+        }
+
+        .new-analysis-btn {
+            width: 100%;
+            padding: 12px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-bottom: 15px;
+        }
+
+        .new-analysis-btn:hover {
+            background: #2980b9;
+        }
+
+        .session-list-section h3 {
+            font-size: 13px;
+            margin-bottom: 10px;
+            color: #bdc3c7;
+            text-transform: uppercase;
+        }
+
+        .session-item {
+            background: #34495e;
+            padding: 10px;
+            margin-bottom: 8px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 12px;
+        }
+
+        .session-item:hover {
+            background: #415566;
+        }
+
+        .session-item.active {
+            background: #3498db;
+            box-shadow: 0 2px 8px rgba(52, 152, 219, 0.3);
+        }
+
+        .session-item-id {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .session-item-task {
+            color: #bdc3c7;
+            font-size: 11px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Main Chat Area */
+        .main-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: white;
+        }
+
+        .chat-header {
+            padding: 15px 25px;
+            background: white;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-header h2 {
+            font-size: 20px;
+            color: #2c3e50;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .header-btn {
+            padding: 8px 16px;
+            background: #ecf0f1;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background 0.2s;
+        }
+
+        .header-btn:hover {
+            background: #d5dbdb;
+        }
+
+        .header-btn.primary {
+            background: #3498db;
+            color: white;
+        }
+
+        .header-btn.primary:hover {
+            background: #2980b9;
+        }
+
+        /* Chat Messages Area */
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 25px;
+            background: #fafafa;
+        }
+
+        .message {
+            margin-bottom: 20px;
+            animation: messageSlide 0.3s ease-out;
+        }
+
+        @keyframes messageSlide {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .message-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .message-avatar.user {
+            background: #3498db;
+            color: white;
+        }
+
+        .message-avatar.agent {
+            background: #27ae60;
+            color: white;
+        }
+
+        .message-avatar.system {
+            background: #95a5a6;
+            color: white;
+        }
+
+        .message-meta {
+            flex: 1;
+        }
+
+        .message-sender {
+            font-weight: 600;
+            font-size: 14px;
+            color: #2c3e50;
+        }
+
+        .message-time {
+            font-size: 11px;
+            color: #95a5a6;
+        }
+
+        .message-content {
+            margin-left: 42px;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .message-text {
+            line-height: 1.6;
+            color: #2c3e50;
+            white-space: pre-wrap;
+        }
+
+        /* Reasoning Card (Expandable) */
+        .reasoning-card {
+            margin-left: 42px;
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-left: 4px solid #3498db;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .reasoning-card-header {
+            padding: 12px 15px;
+            background: #f8f9fa;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            user-select: none;
+        }
+
+        .reasoning-card-header:hover {
+            background: #ecf0f1;
+        }
+
+        .reasoning-card-title {
+            font-weight: 600;
+            font-size: 13px;
+            color: #2c3e50;
+        }
+
+        .reasoning-card-icon {
+            font-size: 12px;
+            color: #7f8c8d;
+            transition: transform 0.2s;
+        }
+
+        .reasoning-card.expanded .reasoning-card-icon {
+            transform: rotate(180deg);
+        }
+
+        .reasoning-card-body {
+            display: none;
+            padding: 15px;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #34495e;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .reasoning-card.expanded .reasoning-card-body {
+            display: block;
+        }
+
+        /* Artifact Preview */
+        .artifact-preview {
+            margin-left: 42px;
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .artifact-preview-header {
+            padding: 12px 15px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        .artifact-preview-body {
+            padding: 15px;
+        }
+
+        .artifact-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .artifact-tab {
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #7f8c8d;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .artifact-tab:hover {
+            color: #2c3e50;
+        }
+
+        .artifact-tab.active {
+            color: #3498db;
+            border-bottom-color: #3498db;
+        }
+
+        .artifact-content {
+            display: none;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+        }
+
+        .artifact-content.active {
+            display: block;
+        }
+
+        .plots-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+        }
+
+        .plot-thumb {
+            border: 1px solid #e0e0e0;
+            border-radius: 5px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .plot-thumb:hover {
+            transform: scale(1.02);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+
+        .plot-thumb img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        /* Chat Input */
+        .chat-input-area {
+            padding: 20px 25px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .chat-mode-selector {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .mode-btn {
+            padding: 6px 12px;
+            background: #ecf0f1;
+            border: 2px solid transparent;
+            border-radius: 5px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .mode-btn:hover {
+            background: #d5dbdb;
+        }
+
+        .mode-btn.active {
+            background: #e3f2fd;
+            border-color: #3498db;
+            color: #3498db;
+            font-weight: 600;
+        }
+
+        .input-wrapper {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            resize: none;
+            min-height: 50px;
+            max-height: 150px;
+            transition: border-color 0.2s;
+        }
+
+        .chat-input:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+
+        .chat-input:disabled {
+            background: #f5f5f5;
+            cursor: not-allowed;
+        }
+
+        .send-btn {
+            padding: 12px 24px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+
+        .send-btn:hover:not(:disabled) {
+            background: #2980b9;
+        }
+
+        .send-btn:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #2c3e50;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .form-group input[type="file"],
+        .form-group input[type="number"],
+        .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 5px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .modal-btn {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .modal-btn.primary {
+            background: #3498db;
+            color: white;
+        }
+
+        .modal-btn.primary:hover {
+            background: #2980b9;
+        }
+
+        .modal-btn.secondary {
+            background: #ecf0f1;
+            color: #2c3e50;
+        }
+
+        .modal-btn.secondary:hover {
+            background: #d5dbdb;
+        }
+
+        /* Loading */
+        .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 8px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #95a5a6;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #bdc3c7;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #95a5a6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h1>📊 Statistical Analysis Agent</h1>
+            </div>
+
+            <div class="sidebar-content">
+                <button class="new-analysis-btn" onclick="openNewAnalysisModal()">
+                    ➕ New Analysis
+                </button>
+
+                <div class="session-list-section">
+                    <h3>Sessions</h3>
+                    <div id="sessionList">
+                        <div class="empty-state" style="padding: 20px;">
+                            <p style="font-size: 12px;">No sessions yet</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Chat Area -->
+        <div class="main-area">
+            <div class="chat-header">
+                <h2 id="chatTitle">Statistical Analysis Agent</h2>
+                <div class="header-actions">
+                    <button class="header-btn" onclick="showArtifacts()" id="artifactsBtn" style="display: none;">
+                        📄 View Artifacts
+                    </button>
+                    <button class="header-btn primary" onclick="openNewAnalysisModal()">
+                        ➕ New
+                    </button>
+                </div>
+            </div>
+
+            <div class="chat-messages" id="chatMessages">
+                <div class="empty-state">
+                    <div class="empty-state-icon">💬</div>
+                    <p>Start a new analysis or select a session</p>
+                </div>
+            </div>
+
+            <div class="chat-input-area">
+                <div class="chat-mode-selector">
+                    <button class="mode-btn active" data-mode="question" onclick="setChatMode('question')">
+                        💬 Ask Question
+                    </button>
+                    <button class="mode-btn" data-mode="refine" onclick="setChatMode('refine')">
+                        🔄 Refine Analysis
+                    </button>
+                </div>
+                <div class="input-wrapper">
+                    <textarea
+                        id="chatInput"
+                        class="chat-input"
+                        placeholder="Ask a question about the analysis..."
+                        disabled
+                        rows="1"
+                    ></textarea>
+                    <button id="sendBtn" class="send-btn" onclick="sendMessage()" disabled>
+                        Send
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Analysis Modal -->
+    <div class="modal" id="newAnalysisModal">
+        <div class="modal-content">
+            <div class="modal-header">New Statistical Analysis</div>
+            <form id="newAnalysisForm" onsubmit="startNewAnalysis(event)">
+                <div class="form-group">
+                    <label for="dataFile">Data File</label>
+                    <input type="file" id="dataFile" accept=".csv,.xlsx,.xls,.json" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="taskInput">Analysis Task</label>
+                    <textarea
+                        id="taskInput"
+                        placeholder="e.g., Calculate 99% VaR using historical method and show distribution"
+                        required
+                    ></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="maxIterations">Max Iterations</label>
+                    <input type="number" id="maxIterations" value="3" min="1" max="10">
+                </div>
+
+                <div class="modal-actions">
+                    <button type="button" class="modal-btn secondary" onclick="closeNewAnalysisModal()">
+                        Cancel
+                    </button>
+                    <button type="submit" class="modal-btn primary">
+                        Start Analysis
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Artifacts Modal -->
+    <div class="modal" id="artifactsModal">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="modal-header">Analysis Artifacts</div>
+            <div id="artifactsContent"></div>
+            <div class="modal-actions">
+                <button type="button" class="modal-btn primary" onclick="closeArtifactsModal()">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

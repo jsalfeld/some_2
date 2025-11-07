@@ -421,21 +421,11 @@ def validate_results(state: StatisticalAnalysisState) -> StatisticalAnalysisStat
    - Are results interpretable and clearly presented?
    - Are visualizations appropriate?
 
-4. ANALYSIS DETAILS:
-   Provide a summary of:
-   - Methods used
-   - Assumptions checked and their results
-   - Any transformations or adjustments made
+Respond with ONLY:
+- "Analysis is valid and complete." if everything is correct
+- OR specific improvements needed (be brief and actionable)
 
-5. ANALYSIS CONCLUSIONS:
-   Provide:
-   - Key findings with statistical support
-   - Practical interpretation
-   - Limitations
-   - Recommendations (if applicable)
-
-If improvements are needed, specify what should be changed. If the analysis is valid and complete, say "Analysis is valid and complete."
-"""
+Do NOT generate report content - only validation feedback."""
 
     messages = [
         SystemMessage(content=system_prompt),
@@ -455,33 +445,6 @@ Please provide your validation assessment.""")
 
     response = llm.invoke(messages)
     validation = response.content.strip()
-
-    # Parse the validation response to extract analysis details and conclusions
-    # Look for sections in the response
-    lines = validation.split('\n')
-    analysis_details = []
-    analysis_conclusions = []
-    current_section = None
-
-    for line in lines:
-        line_lower = line.lower()
-        if 'analysis details' in line_lower or 'methods used' in line_lower:
-            current_section = 'details'
-        elif 'analysis conclusions' in line_lower or 'key findings' in line_lower or 'conclusions' in line_lower:
-            current_section = 'conclusions'
-        elif current_section == 'details':
-            analysis_details.append(line)
-        elif current_section == 'conclusions':
-            analysis_conclusions.append(line)
-
-    # If sections weren't clearly identified, use a simpler heuristic
-    if not analysis_details and not analysis_conclusions:
-        midpoint = len(lines) // 2
-        analysis_details = lines[:midpoint]
-        analysis_conclusions = lines[midpoint:]
-
-    analysis_details_str = '\n'.join(analysis_details).strip()
-    analysis_conclusions_str = '\n'.join(analysis_conclusions).strip()
 
     # Determine if analysis is valid and complete
     is_valid = (
@@ -515,16 +478,130 @@ Validation Details:
 
     return {
         **state,
-        "analysis_details": analysis_details_str,
-        "analysis_conclusions": analysis_conclusions_str,
         "is_valid": is_valid,
         "should_continue": should_continue,
         "reasoning_log": reasoning_log
     }
 
 
+def compile_report_content(state: StatisticalAnalysisState) -> StatisticalAnalysisState:
+    """NEW Sixth node: Compile comprehensive, self-contained report content from analysis results.
+
+    This is separate from validation - it extracts detailed report sections with actual data and results.
+    """
+
+    system_prompt = """You are a report compiler. Create a comprehensive, self-contained analysis report.
+
+Extract and format these THREE sections based on the ACTUAL RESULTS:
+
+1. OBJECTIVE (Short and Clear - 2-3 sentences):
+   - What specific assumptions/hypotheses are being tested?
+   - What is the research question being answered?
+
+2. ANALYSIS DETAILS (Comprehensive and Specific):
+   - Description of input data (mention actual sample size, variables examined)
+   - Statistical tests performed (name the SPECIFIC tests used, e.g., "Independent t-test", "Shapiro-Wilk test")
+   - Actual test results with NUMBERS (test statistics, p-values, confidence intervals from the output)
+   - Reference to visualizations created (list actual plot filenames mentioned in output)
+   - Key numeric results in tables or bullet points
+
+3. CONCLUSIONS (Directly Answer the Objective):
+   - Direct answer to the research question stated in objective
+   - Statistical evidence supporting the conclusion (cite specific p-values/test results)
+   - Practical interpretation of what the results mean
+   - Limitations of the analysis
+   - Recommendations for next steps
+
+IMPORTANT:
+- Use ACTUAL values from the execution output (don't make up numbers)
+- Be specific about what tests were run and what they found
+- Reference specific plots by filename
+- Make the report self-contained (someone reading it should understand everything without seeing the code)"""
+
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=f"""Task: {state['task']}
+
+Analysis Plan Created:
+{state['analysis_objective']}
+
+Data Summary:
+{state['data_summary'][:500]}...
+
+Execution Results (ACTUAL OUTPUT):
+{state['execution_result']}
+
+Code Context (for understanding what was done):
+{state['code'][:1000]}...
+
+Based on the ACTUAL RESULTS above, compile the three report sections.""")
+    ]
+
+    response = llm.invoke(messages)
+    report_content = response.content.strip()
+
+    # Parse into sections
+    lines = report_content.split('\n')
+    objective = []
+    details = []
+    conclusions = []
+    current_section = None
+
+    for line in lines:
+        line_lower = line.lower()
+        if ('objective' in line_lower or '1.' in line) and ':' in line and not current_section:
+            current_section = 'objective'
+            continue
+        elif ('analysis details' in line_lower or 'methodology' in line_lower or '2.' in line) and ':' in line:
+            current_section = 'details'
+            continue
+        elif ('conclusion' in line_lower or '3.' in line) and ':' in line:
+            current_section = 'conclusions'
+            continue
+
+        if current_section == 'objective':
+            objective.append(line)
+        elif current_section == 'details':
+            details.append(line)
+        elif current_section == 'conclusions':
+            conclusions.append(line)
+
+    objective_str = '\n'.join(objective).strip()
+    details_str = '\n'.join(details).strip()
+    conclusions_str = '\n'.join(conclusions).strip()
+
+    # Fallback: if parsing failed, try simpler approach
+    if not details_str or not conclusions_str:
+        parts = report_content.split('\n\n')
+        if len(parts) >= 3:
+            objective_str = parts[0] if not objective_str else objective_str
+            details_str = parts[1] if not details_str else details_str
+            conclusions_str = '\n\n'.join(parts[2:]) if not conclusions_str else conclusions_str
+
+    # Log reasoning
+    thought = f"""Compiled comprehensive report content from analysis results.
+
+Report Sections Generated:
+- Objective: {len(objective_str)} characters
+- Analysis Details: {len(details_str)} characters
+- Conclusions: {len(conclusions_str)} characters
+
+Report includes actual test results, p-values, and references to generated plots.
+The report is self-contained and can be understood independently."""
+
+    reasoning_log = add_thought(state, "compile_report_content", thought)
+
+    return {
+        **state,
+        "analysis_objective": objective_str if objective_str else state["analysis_objective"],
+        "analysis_details": details_str if details_str else "Analysis details not extracted",
+        "analysis_conclusions": conclusions_str if conclusions_str else "Conclusions not extracted",
+        "reasoning_log": reasoning_log
+    }
+
+
 def generate_report(state: StatisticalAnalysisState) -> StatisticalAnalysisState:
-    """Sixth node: Generate the final report and reasoning files."""
+    """Seventh node: Generate the final report and reasoning files."""
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     reasoning_log = state.get("reasoning_log", [])
@@ -685,11 +762,11 @@ Files created:
     }
 
 
-def should_continue_decision(state: StatisticalAnalysisState) -> Literal["write_analysis_code", "generate_report"]:
-    """Determine if we should continue iterating or move to report generation."""
+def should_continue_decision(state: StatisticalAnalysisState) -> Literal["write_analysis_code", "compile_report_content"]:
+    """Determine if we should continue iterating or move to report compilation."""
     if state["should_continue"]:
         return "write_analysis_code"
-    return "generate_report"
+    return "compile_report_content"
 
 
 # Build the graph
@@ -704,6 +781,7 @@ def create_statistical_agent():
     workflow.add_node("write_analysis_code", write_analysis_code)
     workflow.add_node("execute_code", execute_code)
     workflow.add_node("validate_results", validate_results)
+    workflow.add_node("compile_report_content", compile_report_content)  # NEW: compile report before generating files
     workflow.add_node("generate_report", generate_report)
 
     # Add edges - linear flow from start through validation
@@ -719,9 +797,12 @@ def create_statistical_agent():
         should_continue_decision,
         {
             "write_analysis_code": "write_analysis_code",  # Loop back to retry
-            "generate_report": "generate_report"  # Move to report generation
+            "compile_report_content": "compile_report_content"  # Move to report compilation
         }
     )
+
+    # After compiling report content, generate the report files
+    workflow.add_edge("compile_report_content", "generate_report")
 
     # Report generation is the final step
     workflow.add_edge("generate_report", END)

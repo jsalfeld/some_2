@@ -333,6 +333,30 @@
         }
 
         /* ============================================================
+           STOP BUTTON
+           ============================================================ */
+        .stop-btn {
+            padding: 8px 16px;
+            background: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        .stop-btn:hover {
+            background: #c0392b;
+        }
+
+        .stop-btn:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+        }
+
+        /* ============================================================
            RIGHT SIDEBAR - ARTIFACTS
            ============================================================ */
         .right-sidebar {
@@ -548,9 +572,12 @@
         <div class="chat-area">
             <div class="chat-header">
                 <div class="chat-title" id="chatTitle">Statistical Analysis Agent</div>
-                <div class="mode-selector">
-                    <button class="mode-btn active" data-mode="question" onclick="setChatMode('question')">Question</button>
-                    <button class="mode-btn" data-mode="refine" onclick="setChatMode('refine')">Refine</button>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button id="stopBtn" class="stop-btn" onclick="stopAnalysis()" style="display: none;">⏹ Stop</button>
+                    <div class="mode-selector">
+                        <button class="mode-btn active" data-mode="question" onclick="setChatMode('question')">Question</button>
+                        <button class="mode-btn" data-mode="refine" onclick="setChatMode('refine')">Refine</button>
+                    </div>
                 </div>
             </div>
 
@@ -611,13 +638,39 @@
         </div>
     </div>
 
+    <!-- CODE APPROVAL MODAL -->
+    <div class="modal" id="codeApprovalModal">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="modal-header">
+                <h2>⚠️ Code Approval Required</h2>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 15px; color: #e74c3c; font-weight: 500;">
+                    The agent has generated code that needs your approval before execution.
+                </p>
+                <div class="form-group">
+                    <label>Generated Code:</label>
+                    <pre id="pendingCodePreview" style="background: #f8f9fa; padding: 15px; border-radius: 6px; overflow-x: auto; max-height: 400px; font-size: 12px; border: 1px solid #e0e0e0;"></pre>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button onclick="approveCode()" class="submit-btn" style="flex: 1; background: #27ae60;">
+                        ✓ Approve & Execute
+                    </button>
+                    <button onclick="rejectCode()" class="submit-btn" style="flex: 1; background: #e74c3c;">
+                        ✗ Reject & Stop
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         // State
         let currentSessionId = null;
         let eventSource = null;
         let chatMode = 'question';
         let artifactsPollInterval = null;
-        const API_BASE = 'http://localhost:9001';
+        const API_BASE = '{{ api_base_url }}';
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -810,6 +863,9 @@
 
             addSystemMessage('Agent is working... <span class="spinner"></span>');
 
+            // Show stop button
+            document.getElementById('stopBtn').style.display = 'block';
+
             eventSource = new EventSource(`${API_BASE}/analysis/${sessionId}/stream`);
 
             eventSource.onmessage = (event) => {
@@ -841,11 +897,86 @@
                     lastReasoningCount = status.reasoning_entries;
                 }
 
-                if (status.status === 'completed' && eventSource) {
+                // Check if code approval is needed
+                if (status.status === 'awaiting_approval') {
+                    showCodeApprovalModal();
+                }
+
+                // Check if analysis completed or was cancelled
+                if ((status.status === 'completed' || status.status === 'cancelled') && eventSource) {
                     handleCompletion({ status: status.status, is_valid: status.is_valid });
                 }
             } catch (error) {
                 // Silent fail for polling
+            }
+        }
+
+        async function showCodeApprovalModal() {
+            if (!currentSessionId) return;
+
+            try {
+                // Get the pending code from session
+                const response = await fetch(`${API_BASE}/analysis/${currentSessionId}/status`);
+                const sessionData = await response.json();
+
+                // Display the code in the modal
+                const codePreview = document.getElementById('pendingCodePreview');
+                codePreview.textContent = sessionData.pending_code || 'No code available';
+
+                // Show the modal
+                document.getElementById('codeApprovalModal').classList.add('active');
+
+                // Add system message
+                addSystemMessage('⚠️ Code approval required. Please review the generated code.');
+            } catch (error) {
+                console.error('Error showing code approval:', error);
+            }
+        }
+
+        async function approveCode() {
+            if (!currentSessionId) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/analysis/${currentSessionId}/approve_code`, {
+                    method: 'POST'
+                });
+
+                const result = await response.json();
+                console.log('Approval result:', result);
+
+                // Close modal
+                document.getElementById('codeApprovalModal').classList.remove('active');
+
+                // Add system message
+                addSystemMessage('✓ Code approved. Continuing execution...');
+            } catch (error) {
+                console.error('Error approving code:', error);
+                addSystemMessage('Error approving code: ' + error.message);
+            }
+        }
+
+        async function rejectCode() {
+            if (!currentSessionId) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/analysis/${currentSessionId}/reject_code`, {
+                    method: 'POST'
+                });
+
+                const result = await response.json();
+                console.log('Rejection result:', result);
+
+                // Close modal
+                document.getElementById('codeApprovalModal').classList.remove('active');
+
+                // Add system message
+                addSystemMessage('✗ Code rejected. Analysis stopped.');
+
+                // Trigger completion handling
+                handleCompletion({ status: 'cancelled', is_valid: false });
+            } catch (error) {
+                console.error('Error rejecting code:', error);
+                addSystemMessage('Error rejecting code: ' + error.message);
             }
         }
 
@@ -857,10 +988,44 @@
                 eventSource = null;
             }
 
-            addSystemMessage(`✅ Analysis ${data.status}! ${data.is_valid ? 'Results validated.' : ''}`);
+            // Reset and hide stop button
+            const stopBtn = document.getElementById('stopBtn');
+            stopBtn.disabled = false;
+            stopBtn.textContent = '⏹ Stop';
+            stopBtn.style.display = 'none';
+
+            const statusEmoji = data.status === 'cancelled' ? '⏹' : '✅';
+            const statusText = data.status === 'cancelled' ? 'stopped' : data.status;
+            addSystemMessage(`${statusEmoji} Analysis ${statusText}! ${data.is_valid ? 'Results validated.' : ''}`);
 
             loadSessions();
             loadArtifacts(); // Load artifacts immediately on completion
+        }
+
+        async function stopAnalysis() {
+            if (!currentSessionId) return;
+
+            const stopBtn = document.getElementById('stopBtn');
+            stopBtn.disabled = true;
+            stopBtn.textContent = '⏹ Stopping...';
+
+            try {
+                const response = await fetch(`${API_BASE}/analysis/${currentSessionId}/stop`, {
+                    method: 'POST'
+                });
+
+                const result = await response.json();
+                console.log('Stop result:', result);
+
+                // The SSE stream will trigger handleCompletion when it detects the cancelled status
+                addSystemMessage('⏹ Stopping analysis...');
+
+            } catch (error) {
+                console.error('Error stopping analysis:', error);
+                addSystemMessage('Error stopping analysis: ' + error.message);
+                stopBtn.disabled = false;
+                stopBtn.textContent = '⏹ Stop';
+            }
         }
 
         // ====================================================================
