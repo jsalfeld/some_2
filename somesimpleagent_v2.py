@@ -495,8 +495,8 @@ def compile_report_content(state: StatisticalAnalysisState) -> StatisticalAnalys
 Extract and format these THREE sections based on the ACTUAL RESULTS:
 
 1. OBJECTIVE (Short and Clear - 2-3 sentences):
+   - Clearly describe what the analysis aims to achieve.
    - What specific assumptions/hypotheses are being tested?
-   - What is the research question being answered?
 
 2. ANALYSIS DETAILS (Comprehensive and Specific):
    - Description of input data (mention actual sample size, variables examined)
@@ -510,9 +510,9 @@ Extract and format these THREE sections based on the ACTUAL RESULTS:
    - Statistical evidence supporting the conclusion (cite specific p-values/test results)
    - Practical interpretation of what the results mean
    - Limitations of the analysis
-   - Recommendations for next steps
 
 IMPORTANT:
+- You can use HTML and Markdown formatting for clarity (e.g., tables, bold text)
 - Use ACTUAL values from the execution output (don't make up numbers)
 - Be specific about what tests were run and what they found
 - Reference specific plots by filename
