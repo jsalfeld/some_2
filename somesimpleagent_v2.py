@@ -13,6 +13,8 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 import subprocess
 import tempfile
+import yaml
+from pathlib import Path
 
 
 # Define the state for our statistical analysis agent
@@ -23,7 +25,8 @@ class StatisticalAnalysisState(TypedDict):
     output_dir: str  # Directory to save plots and output files
 
     # Analysis planning
-    analysis_objective: str
+    analysis_objective: str  # Short objective (2-3 sentences)
+    analysis_plan: str  # Full analysis plan with methodology, approach, assumptions
     data_summary: str
 
     # Code generation & execution
@@ -62,7 +65,7 @@ def add_thought(state: StatisticalAnalysisState, node_name: str, thought: str) -
 
 
 def clean_code(code: str) -> str:
-    """Remove markdown code fences from generated code."""
+    """Remove markdown code fences and explanatory text from generated code."""
     code = code.strip()
 
     # Remove starting fence
@@ -82,11 +85,46 @@ def clean_code(code: str) -> str:
     # Remove any remaining ``` lines (sometimes LLM adds them in the middle)
     lines = code.split('\n')
     cleaned_lines = []
+    in_code = True
+
     for line in lines:
         stripped = line.strip()
+
         # Skip lines that are just markdown fences
         if stripped in ['```', '```python', '```py']:
             continue
+
+        # Skip explanatory text that's clearly not code
+        # LLM sometimes adds sentences like "This code will..." at the end
+        if stripped and not any([
+            stripped.startswith('#'),  # Comment
+            stripped.startswith('import '),
+            stripped.startswith('from '),
+            '=' in line,  # Assignment
+            stripped.startswith('def '),
+            stripped.startswith('class '),
+            stripped.startswith('if '),
+            stripped.startswith('for '),
+            stripped.startswith('while '),
+            stripped.startswith('with '),
+            stripped.startswith('try:'),
+            stripped.startswith('except'),
+            stripped.startswith('finally:'),
+            stripped.startswith('return '),
+            stripped.startswith('print('),
+            stripped.startswith('plt.'),
+            stripped.startswith('pd.'),
+            stripped.startswith('np.'),
+            line.strip().endswith(':'),  # Control structure
+            line.strip().endswith(')'),  # Function call
+            line.strip().endswith(']'),  # Array/list
+            line.strip().endswith('}'),  # Dict
+            line == '',  # Empty line
+            line[0].isspace() and len(line) > 1  # Indented line (likely in a block)
+        ]):
+            # This looks like explanatory text, skip it
+            continue
+
         cleaned_lines.append(line)
 
     code = '\n'.join(cleaned_lines)
@@ -185,29 +223,45 @@ Please provide:
     response = llm.invoke(messages)
     analysis_plan = response.content.strip()
 
-    # Extract objective (assume first paragraph or section)
+    # Extract objective (first paragraph or until first section header)
     objective_lines = []
     for line in analysis_plan.split('\n'):
+        line_lower = line.lower().strip()
+        # Stop at section headers like "### 2." or "Recommended Statistical Approach"
+        if line_lower.startswith('###') or line_lower.startswith('## 2') or 'approach' in line_lower or 'method' in line_lower:
+            break
         if line.strip():
             objective_lines.append(line)
-            if len(objective_lines) >= 3:  # Get first few meaningful lines as objective
-                break
 
-    analysis_objective = '\n'.join(objective_lines)
+    analysis_objective = '\n'.join(objective_lines).strip()
+
+    # If objective is empty or too long, just use first few lines
+    if not analysis_objective or len(analysis_objective) > 500:
+        objective_lines = []
+        for line in analysis_plan.split('\n'):
+            if line.strip():
+                objective_lines.append(line)
+                if len(objective_lines) >= 3:
+                    break
+        analysis_objective = '\n'.join(objective_lines)
 
     # Log the reasoning
     thought = f"""Task Interpretation: {task}
 
-Analysis Plan:
+Full Analysis Plan Generated:
 {analysis_plan}
 
-This plan guides what statistical methods we'll implement."""
+Extracted Objective (2-3 sentences):
+{analysis_objective}
+
+This complete plan guides what statistical methods we'll implement."""
 
     reasoning_log = add_thought(state, "plan_analysis", thought)
 
     return {
         **state,
         "analysis_objective": analysis_objective,
+        "analysis_plan": analysis_plan,  # Store the FULL plan
         "reasoning_log": reasoning_log
     }
 
@@ -248,6 +302,9 @@ Requirements:
 Only output the Python code without explanations or markdown formatting.
 The code should be production-ready and include error handling."""
 
+        # Get the full analysis plan
+        analysis_plan = state.get("analysis_plan", analysis_objective)
+
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"""Task: {task}
@@ -258,10 +315,10 @@ Data File: {data_filename}
 Data Summary:
 {data_summary}
 
-Analysis Objective:
-{analysis_objective}
+Full Analysis Plan:
+{analysis_plan}
 
-Write complete Python code to perform this analysis.
+Write complete Python code to perform this analysis following the plan above.
 IMPORTANT: Save all plots to the current directory with descriptive names like 'var_distribution.png', 'rolling_var.png', etc.""")
         ]
     else:
@@ -492,38 +549,44 @@ def compile_report_content(state: StatisticalAnalysisState) -> StatisticalAnalys
 
     system_prompt = """You are a report compiler. Create a comprehensive, self-contained analysis report.
 
-Extract and format these THREE sections based on the ACTUAL RESULTS:
+Extract and format EXACTLY THREE sections based on the ACTUAL RESULTS. Keep sections STRICTLY SEPARATE:
 
-1. OBJECTIVE (Short and Clear - 2-3 sentences):
-   - Clearly describe what the analysis aims to achieve.
-   - What specific assumptions/hypotheses are being tested?
+=== SECTION 1: OBJECTIVE ===
+(Short and Clear - 2-3 sentences ONLY):
+- Clearly describe what the analysis aims to achieve
+- What specific question/hypothesis is being tested
+DO NOT include methods, results, or conclusions here!
 
-2. ANALYSIS DETAILS (Comprehensive and Specific):
-   - Description of input data (mention actual sample size, variables examined)
-   - Statistical tests performed (name the SPECIFIC tests used, e.g., "Independent t-test", "Shapiro-Wilk test")
-   - Actual test results with NUMBERS (test statistics, p-values, confidence intervals from the output)
-   - Reference to visualizations created (list actual plot filenames mentioned in output)
-   - Key numeric results in tables or bullet points
+=== SECTION 2: ANALYSIS DETAILS ===
+(Comprehensive methodology and results):
+- use Markdown or HTML formatting for clarity
+- Description of input data (actual sample size, variables examined)
+- Statistical methods and tests performed (name SPECIFIC tests used)
+- Actual test results with NUMBERS (test statistics, p-values, confidence intervals)
+- Visualizations or .png files created (list actual plot filenames)
+- Key numeric results in tables or bullet points
+DO NOT include the objective or final conclusions here!
 
-3. CONCLUSIONS (Directly Answer the Objective):
-   - Direct answer to the research question stated in objective
-   - Statistical evidence supporting the conclusion (cite specific p-values/test results)
-   - Practical interpretation of what the results mean
-   - Limitations of the analysis
+=== SECTION 3: CONCLUSIONS ===
+(Answer the objective - keep brief):
+- Direct answer to the research question stated in objective
+- Statistical evidence supporting conclusion (cite specific p-values/test results)
+- Practical interpretation of results
+- Key limitations (1-2 sentences)
+DO NOT repeat methodology details here!
 
-IMPORTANT:
-- You can use HTML and Markdown formatting for clarity (e.g., tables, bold text)
-- Use ACTUAL values from the execution output (don't make up numbers)
-- Be specific about what tests were run and what they found
-- Reference specific plots by filename
-- Make the report self-contained (someone reading it should understand everything without seeing the code)"""
+CRITICAL FORMATTING RULES:
+- Start each section with its header (=== SECTION N: NAME ===)
+- Use ACTUAL values from execution output
+- Keep sections cleanly separated - NO mixing of content
+- Make the report self-contained"""
 
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=f"""Task: {state['task']}
 
-Analysis Plan Created:
-{state['analysis_objective']}
+Full Analysis Plan (with methodology and approach):
+{state.get('analysis_plan', state['analysis_objective'])}
 
 Data Summary:
 {state['data_summary'][:500]}...
@@ -534,7 +597,7 @@ Execution Results (ACTUAL OUTPUT):
 Code Context (for understanding what was done):
 {state['code'][:1000]}...
 
-Based on the ACTUAL RESULTS above, compile the three report sections.""")
+Based on the ACTUAL RESULTS above and the original analysis plan, compile the three report sections.""")
     ]
 
     response = llm.invoke(messages)
@@ -607,59 +670,66 @@ def generate_report(state: StatisticalAnalysisState) -> StatisticalAnalysisState
     reasoning_log = state.get("reasoning_log", [])
 
     # ========================================================================
-    # 1. Build the ANALYSIS REPORT in YAML format (self-contained)
+    # 1. Load template and fill with analysis data
     # ========================================================================
-    # Format as YAML with proper indentation
-    report_lines = []
-    report_lines.append("# Statistical Analysis Report")
-    report_lines.append(f"# Generated: {timestamp}")
-    report_lines.append("")
-    report_lines.append("analysis_report:")
-    report_lines.append("  metadata:")
-    report_lines.append(f"    generated: \"{timestamp}\"")
-    report_lines.append(f"    task: \"{state.get('task', 'N/A').replace(chr(34), chr(39))}\"")
-    report_lines.append("")
 
-    # Section 1: Analysis Objective
-    report_lines.append("  objective:")
-    objective = state.get("analysis_objective", "Not specified")
-    # Handle multi-line text in YAML
-    if '\n' in objective:
-        report_lines.append("    description: |")
-        for line in objective.split('\n'):
-            report_lines.append(f"      {line}")
+    # Find template file - look in current directory and parent directory
+    template_path = None
+    current_dir = Path.cwd()
+
+    # Try current directory first
+    if (current_dir / "analysis_template.yml").exists():
+        template_path = current_dir / "analysis_template.yml"
+    # Try parent directory
+    elif (current_dir.parent / "analysis_template.yml").exists():
+        template_path = current_dir.parent / "analysis_template.yml"
+    # Try the script's directory
+    elif (Path(__file__).parent / "analysis_template.yml").exists():
+        template_path = Path(__file__).parent / "analysis_template.yml"
+
+    if template_path and template_path.exists():
+        # Load template as YAML
+        with open(template_path, 'r') as f:
+            report_data = yaml.safe_load(f)
+
+        # Generate title from task
+        task = state.get('task', 'Statistical Analysis')
+        title = task.split('.')[0][:60]
+        if len(task.split('.')[0]) > 60:
+            title += "..."
+
+        # Create label from title
+        label = "label:" + title.lower().replace(' ', '_').replace(',', '').replace(':', '').replace('(', '').replace(')', '')[:40]
+
+        # Fill in the template with actual values
+        report_data['analysis_title'] = title
+        report_data['analysis_label'] = label
+        report_data['analysis_objective'] = state.get("analysis_objective", "Not specified")
+        report_data['analysis_details'] = state.get("analysis_details", "No details available")
+        report_data['analysis_conclusions'] = state.get("analysis_conclusions", "No conclusions available")
+
+        # Save as YAML with proper formatting
+        report_content = yaml.dump(report_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
     else:
-        report_lines.append(f"    description: \"{objective.replace(chr(34), chr(39))}\"")
-    report_lines.append("")
+        # Fallback: build YAML manually if template not found
+        print("Warning: analysis_template.yml not found, using fallback format")
 
-    # Section 2: Analysis Details (Methods and Results)
-    report_lines.append("  methodology:")
-    details = state.get("analysis_details", "No details available")
-    if '\n' in details:
-        report_lines.append("    details: |")
-        for line in details.split('\n'):
-            report_lines.append(f"      {line}")
-    else:
-        report_lines.append(f"    details: \"{details.replace(chr(34), chr(39))}\"")
-    report_lines.append("")
+        task = state.get('task', 'Statistical Analysis')
+        title = task.split('.')[0][:60]
+        if len(task.split('.')[0]) > 60:
+            title += "..."
 
-    # Section 3: Analysis Conclusions
-    report_lines.append("  conclusions:")
-    conclusions = state.get("analysis_conclusions", "No conclusions available")
-    if '\n' in conclusions:
-        report_lines.append("    findings: |")
-        for line in conclusions.split('\n'):
-            report_lines.append(f"      {line}")
-    else:
-        report_lines.append(f"    findings: \"{conclusions.replace(chr(34), chr(39))}\"")
-    report_lines.append("")
+        label = "label:" + title.lower().replace(' ', '_').replace(',', '').replace(':', '')[:40]
 
-    # Add validation status
-    report_lines.append("  validation:")
-    report_lines.append(f"    status: \"{state.get('is_valid', False)}\"")
-    report_lines.append(f"    iterations: {state.get('iteration', 0)}")
+        report_data = {
+            'analysis_title': title,
+            'analysis_label': label,
+            'analysis_objective': state.get("analysis_objective", "Not specified"),
+            'analysis_details': state.get("analysis_details", "No details available"),
+            'analysis_conclusions': state.get("analysis_conclusions", "No conclusions available")
+        }
 
-    report_content = '\n'.join(report_lines)
+        report_content = yaml.dump(report_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     # ========================================================================
     # 2. Build the AGENT REASONING file (separate)
@@ -707,13 +777,20 @@ def generate_report(state: StatisticalAnalysisState) -> StatisticalAnalysisState
     reasoning_content = '\n'.join(reasoning_lines)
 
     # ========================================================================
-    # 3. Save all three files
+    # 3. Save all three files to output_dir
     # ========================================================================
+
+    output_dir = state.get("output_dir", ".")
+    output_path = Path(output_dir)
+
+    # Ensure output directory exists
+    output_path.mkdir(parents=True, exist_ok=True)
 
     # Save the analysis report as YAML
     report_filename = "analysis_report.yml"
+    report_path = output_path / report_filename
     try:
-        with open(report_filename, 'w') as f:
+        with open(report_path, 'w') as f:
             f.write(report_content)
         report_saved = True
     except Exception as e:
@@ -722,8 +799,9 @@ def generate_report(state: StatisticalAnalysisState) -> StatisticalAnalysisState
 
     # Save the reasoning log
     reasoning_filename = "agent_reasoning.txt"
+    reasoning_path = output_path / reasoning_filename
     try:
-        with open(reasoning_filename, 'w') as f:
+        with open(reasoning_path, 'w') as f:
             f.write(reasoning_content)
         reasoning_saved = True
     except Exception as e:
@@ -732,8 +810,9 @@ def generate_report(state: StatisticalAnalysisState) -> StatisticalAnalysisState
 
     # Save the code
     code_filename = "analysis_code.py"
+    code_path = output_path / code_filename
     try:
-        with open(code_filename, 'w') as f:
+        with open(code_path, 'w') as f:
             f.write(state.get("code", ""))
         code_saved = True
     except Exception as e:
@@ -835,6 +914,7 @@ def run_statistical_analysis(task: str, data_file_path: str, output_dir: str = "
         "data_file_path": data_file_path,
         "output_dir": output_dir,
         "analysis_objective": "",
+        "analysis_plan": "",  # Full analysis plan with methodology
         "data_summary": "",
         "code": "",
         "execution_result": "",

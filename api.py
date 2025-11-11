@@ -244,34 +244,25 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
     sessions[session_id]["status"] = "completed"
     sessions[session_id]["updated_at"] = datetime.now().isoformat()
 
-    # Save files to session directory with versioning
-    # Always include version suffix to maintain complete history
+    # The agent already saved files to session_dir
+    # Create versioned copies for history
     version_suffix = f"_v{version}"
 
-    # Save versioned files
-    report_content = generate_report_content(final_state)
-    report_filename = f"analysis_report{version_suffix}.yml"
-    with open(session_dir / report_filename, 'w') as f:
-        f.write(report_content)
+    # Files the agent created
+    base_files = [
+        ("analysis_report.yml", f"analysis_report{version_suffix}.yml"),
+        ("agent_reasoning.txt", f"agent_reasoning{version_suffix}.txt"),
+        ("analysis_code.py", f"analysis_code{version_suffix}.py")
+    ]
 
-    reasoning_content = generate_reasoning_content(final_state)
-    reasoning_filename = f"agent_reasoning{version_suffix}.txt"
-    with open(session_dir / reasoning_filename, 'w') as f:
-        f.write(reasoning_content)
+    # Copy to versioned names
+    for base_name, versioned_name in base_files:
+        base_path = session_dir / base_name
+        versioned_path = session_dir / versioned_name
+        if base_path.exists():
+            shutil.copy2(base_path, versioned_path)
 
-    code_filename = f"analysis_code{version_suffix}.py"
-    with open(session_dir / code_filename, 'w') as f:
-        f.write(final_state.get("code", ""))
-
-    # Also save as "latest" (without version) for easy access and backward compatibility
-    with open(session_dir / "analysis_report.yml", 'w') as f:
-        f.write(report_content)
-    with open(session_dir / "agent_reasoning.txt", 'w') as f:
-        f.write(reasoning_content)
-    with open(session_dir / "analysis_code.py", 'w') as f:
-        f.write(final_state.get("code", ""))
-
-    print(f"  Saved artifacts as version {version}: {report_filename}, {reasoning_filename}, {code_filename}")
+    print(f"  Created versioned copies as v{version} for all artifacts")
 
     # Save session metadata
     save_session_metadata()
@@ -279,73 +270,6 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
     return final_state
 
 
-def generate_report_content(state: StatisticalAnalysisState) -> str:
-    """Generate the analysis report content."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    lines = []
-    lines.append("=" * 80)
-    lines.append("STATISTICAL ANALYSIS REPORT")
-    lines.append(f"Generated: {timestamp}")
-    lines.append("=" * 80)
-    lines.append("")
-    lines.append("SECTION 1: ANALYSIS OBJECTIVE")
-    lines.append("-" * 80)
-    lines.append(state.get("analysis_objective", "Not specified"))
-    lines.append("")
-    lines.append("SECTION 2: ANALYSIS DETAILS")
-    lines.append("-" * 80)
-    lines.append(state.get("analysis_details", "No details available"))
-    lines.append("")
-    lines.append("SECTION 3: ANALYSIS CONCLUSIONS")
-    lines.append("-" * 80)
-    lines.append(state.get("analysis_conclusions", "No conclusions available"))
-    lines.append("")
-    lines.append("=" * 80)
-
-    return '\n'.join(lines)
-
-
-def generate_reasoning_content(state: StatisticalAnalysisState) -> str:
-    """Generate the reasoning log content."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    reasoning_log = state.get("reasoning_log", [])
-
-    lines = []
-    lines.append("=" * 80)
-    lines.append("AGENT REASONING PROCESS")
-    lines.append(f"Generated: {timestamp}")
-    lines.append("=" * 80)
-    lines.append("")
-
-    # Group by iteration
-    iterations = {}
-    for entry in reasoning_log:
-        iter_num = entry.get("iteration", 0)
-        if iter_num not in iterations:
-            iterations[iter_num] = []
-        iterations[iter_num].append(entry)
-
-    for iter_num in sorted(iterations.keys()):
-        if iter_num == 0:
-            lines.append("INITIAL ANALYSIS (Iteration 0):")
-        else:
-            lines.append(f"\nITERATION {iter_num}:")
-        lines.append("-" * 80)
-
-        for entry in iterations[iter_num]:
-            node_name = entry.get("node", "unknown")
-            thought = entry.get("thought", "")
-            timestamp_entry = entry.get("timestamp", "")
-
-            lines.append(f"\n[{node_name}] - {timestamp_entry}")
-            lines.append("")
-            for line in thought.split('\n'):
-                lines.append(f"  {line}")
-            lines.append("")
-
-    lines.append("=" * 80)
-    return '\n'.join(lines)
 
 
 # ============================================================================
@@ -407,6 +331,7 @@ async def create_analysis(
         "data_file_path": str(file_path),  # Full path so understand_data can access it
         "output_dir": str(session_dir),  # Full path for plots (used in generated code)
         "analysis_objective": "",
+        "analysis_plan": "",  # Full analysis plan with methodology
         "data_summary": "",
         "code": "",
         "execution_result": "",
@@ -946,9 +871,9 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("Statistical Analysis Agent API")
     print("=" * 60)
-    print("\n🌐 Web UI:        http://localhost:9001")
-    print("📚 API Docs:      http://localhost:9001/docs")
-    print("ℹ️  API Info:      http://localhost:9001/api/info")
+    print("\n🌐 Web UI:        http://localhost:9002")
+    print("📚 API Docs:      http://localhost:9002/docs")
+    print("ℹ️  API Info:      http://localhost:9002/api/info")
     print("\n" + "=" * 60 + "\n")
 
     uvicorn.run(app, host="0.0.0.0", port=9002)
