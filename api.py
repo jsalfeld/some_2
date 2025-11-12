@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
+from contextlib import asynccontextmanager
 import uuid
 import asyncio
 import json
@@ -26,11 +27,47 @@ import os
 # Import our statistical agent (v2 with improved reporting)
 from somesimpleagent_v2 import create_statistical_agent, StatisticalAnalysisState
 
+# Session storage and directories (needed before lifespan)
+sessions: Dict[str, Dict[str, Any]] = {}
+SESSIONS_DIR = Path("sessions")
+SESSION_METADATA_FILE = SESSIONS_DIR / "sessions_metadata.json"
+
+def load_session_metadata():
+    """Load session metadata from disk."""
+    if SESSION_METADATA_FILE.exists():
+        with open(SESSION_METADATA_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+# Lifespan context manager for startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    SESSIONS_DIR.mkdir(exist_ok=True)
+    print("Statistical Analysis Agent API started")
+    print(f"Sessions directory: {SESSIONS_DIR.absolute()}")
+
+    # Load persisted sessions
+    metadata = load_session_metadata()
+    for sid, meta in metadata.items():
+        # Restore session metadata (without full state)
+        sessions[sid] = {
+            **meta,
+            "state": {}  # State will be loaded on demand
+        }
+    print(f"Loaded {len(sessions)} persisted session(s)")
+
+    yield
+
+    # Shutdown
+    print("Shutting down...")
+
 # Initialize FastAPI
 app = FastAPI(
     title="Statistical Analysis Agent API",
     description="AI-powered statistical analysis with reasoning transparency",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Enable CORS for frontend
@@ -59,16 +96,6 @@ REQUIRE_CODE_APPROVAL = os.getenv('REQUIRE_CODE_APPROVAL', 'false').lower() == '
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Session storage (in production, use Redis or database)
-sessions: Dict[str, Dict[str, Any]] = {}
-
-# Directory for storing session files
-SESSIONS_DIR = Path("sessions")
-SESSIONS_DIR.mkdir(exist_ok=True)
-
-# Session metadata file for persistence
-SESSION_METADATA_FILE = SESSIONS_DIR / "sessions_metadata.json"
-
 
 def save_session_metadata():
     """Save session metadata to disk for persistence."""
@@ -84,19 +111,13 @@ def save_session_metadata():
             "data_file": session.get("data_file", ""),
             "session_dir": session["session_dir"],
             "refinement_count": session.get("refinement_count", 0),
-            "artifact_version": session.get("artifact_version", 0)  # Persist version counter
+            "artifact_version": session.get("artifact_version", 0),  # Persist version counter
+            "gitlab_repo": session.get("gitlab_repo"),  # Persist GitLab repo URL
+            "gitlab_branch": session.get("gitlab_branch")  # Persist GitLab branch
         }
 
     with open(SESSION_METADATA_FILE, 'w') as f:
         json.dump(metadata, f, indent=2)
-
-
-def load_session_metadata():
-    """Load session metadata from disk."""
-    if SESSION_METADATA_FILE.exists():
-        with open(SESSION_METADATA_FILE, 'r') as f:
-            return json.load(f)
-    return {}
 
 
 # ============================================================================
@@ -111,6 +132,11 @@ class AnalysisRequest(BaseModel):
 class RefineRequest(BaseModel):
     refinement_prompt: str
     max_iterations: int = 2
+
+
+class GitLabPushRequest(BaseModel):
+    gitlab_repo: str
+    gitlab_branch: str = "main"
 
 
 class SessionInfo(BaseModel):
@@ -306,13 +332,16 @@ async def api_info():
 async def create_analysis(
     file: UploadFile = File(...),
     task: str = Form(...),
-    max_iterations: int = Form(3)
+    max_iterations: int = Form(3),
+    gitlab_repo: str = Form(None),
+    gitlab_branch: str = Form("main")
 ):
     """
     Start a new statistical analysis session.
 
     - Upload a data file (CSV, Excel, etc.)
     - Provide an analysis task/question
+    - Optionally link a GitLab repository and branch for artifact pushing
     - Returns session_id to track progress
     """
 
@@ -356,7 +385,9 @@ async def create_analysis(
         "state": initial_state,
         "session_dir": str(session_dir),
         "artifact_version": 0,  # Start at 0, will increment to 1 on first save
-        "refinement_count": 0
+        "refinement_count": 0,
+        "gitlab_repo": gitlab_repo,  # Store GitLab repo URL if provided
+        "gitlab_branch": gitlab_branch if gitlab_repo else None  # Store GitLab branch if repo provided
     }
 
     # Start analysis in background
@@ -396,7 +427,9 @@ async def get_status(session_id: str):
         "max_iterations": state.get("max_iterations", 3),
         "is_valid": state.get("is_valid", False),
         "has_errors": bool(state.get("execution_error", "")),
-        "reasoning_entries": len(state.get("reasoning_log", []))
+        "reasoning_entries": len(state.get("reasoning_log", [])),
+        "gitlab_repo": session.get("gitlab_repo"),  # Include GitLab repo if linked
+        "gitlab_branch": session.get("gitlab_branch")  # Include GitLab branch if set
     }
 
     # Include pending code if awaiting approval
@@ -796,6 +829,162 @@ async def reject_code(session_id: str):
     }
 
 
+@app.post("/analysis/{session_id}/push-to-gitlab")
+async def push_to_gitlab(session_id: str, request: GitLabPushRequest):
+    """
+    Push analysis artifacts to a GitLab repository.
+
+    Requires GITLAB_TOKEN environment variable to be set.
+
+    Args:
+        session_id: The session ID
+        request: GitLabPushRequest with gitlab_repo and gitlab_branch
+
+    Example usage:
+    export GITLAB_TOKEN=your_personal_access_token
+    """
+    session = get_session(session_id)
+
+    # Get repo and branch from request
+    gitlab_repo = request.gitlab_repo
+    gitlab_branch = request.gitlab_branch
+
+    if not gitlab_repo:
+        raise HTTPException(
+            status_code=400,
+            detail="GitLab repository URL is required"
+        )
+
+    # Check if analysis is completed
+    if session["status"] not in ["completed", "cancelled"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot push artifacts from session with status: {session['status']}"
+        )
+
+    # SAMPLE IMPLEMENTATION - Uncomment and install python-gitlab to use
+    r"""
+    # 1. Get GitLab token from environment
+    import gitlab
+    gitlab_token = os.getenv('GITLAB_TOKEN')
+    if not gitlab_token:
+        raise HTTPException(
+            status_code=500,
+            detail="GITLAB_TOKEN environment variable not set"
+        )
+
+    # 2. Parse repo URL to extract project path
+    # Example: https://gitlab.com/username/repo.git -> username/repo
+    import re
+    match = re.search(r'gitlab\.com[/:]([^/]+/[^/.]+)', gitlab_repo)
+    if not match:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid GitLab repo URL: {gitlab_repo}"
+        )
+    project_path = match.group(1)
+
+    # 3. Connect to GitLab
+    gl = gitlab.Gitlab('https://gitlab.com', private_token=gitlab_token)
+    gl.auth()
+
+    # 4. Get the project
+    project = gl.projects.get(project_path)
+
+    # 5. Get session directory with artifacts
+    session_dir = Path(session["session_dir"])
+
+    # 6. Prepare files to commit
+    # Organize artifacts into different directories in the repo
+    actions = []
+
+    # Add reports to /reports directory
+    for file in session_dir.glob("analysis_report*.yml"):
+        with open(file, 'r') as f:
+            content = f.read()
+        actions.append({
+            'action': 'create',
+            'file_path': f'reports/{file.name}',
+            'content': content
+        })
+
+    # Add reasoning logs to /reasoning directory
+    for file in session_dir.glob("agent_reasoning*.txt"):
+        with open(file, 'r') as f:
+            content = f.read()
+        actions.append({
+            'action': 'create',
+            'file_path': f'reasoning/{file.name}',
+            'content': content
+        })
+
+    # Add code to /code directory
+    for file in session_dir.glob("analysis_code*.py"):
+        with open(file, 'r') as f:
+            content = f.read()
+        actions.append({
+            'action': 'create',
+            'file_path': f'code/{file.name}',
+            'content': content
+        })
+
+    # Add plots to /plots directory (as binary)
+    for file in session_dir.glob("*.png"):
+        with open(file, 'rb') as f:
+            import base64
+            content = base64.b64encode(f.read()).decode('utf-8')
+        actions.append({
+            'action': 'create',
+            'file_path': f'plots/{file.name}',
+            'content': content,
+            'encoding': 'base64'
+        })
+
+    # 7. Create commit with all artifacts
+    commit_message = f'''Add analysis artifacts for session {session_id[:8]}
+
+Session: {session_id}
+Status: {session["status"]}
+Created: {session["created_at"]}
+
+Automated commit from Statistical Analysis Agent
+'''
+
+    data = {
+        'branch': gitlab_branch,  # Use the branch from request
+        'commit_message': commit_message,
+        'actions': actions
+    }
+
+    # Make the commit
+    commit = project.commits.create(data)
+
+    return {
+        "message": "Successfully pushed artifacts to GitLab",
+        "session_id": session_id,
+        "gitlab_repo": gitlab_repo,
+        "gitlab_branch": gitlab_branch,
+        "commit_sha": commit.id,
+        "commit_url": commit.web_url,
+        "files_pushed": len(actions)
+    }
+    """
+
+    # For now, return a placeholder success message
+    # To enable GitLab push:
+    # 1. Install: pip install python-gitlab
+    # 2. Set environment variable: export GITLAB_TOKEN=your_token
+    # 3. Uncomment the code above
+    return {
+        "message": f"Placeholder: Would push artifacts to {gitlab_repo} (branch: {gitlab_branch})",
+        "session_id": session_id,
+        "gitlab_repo": gitlab_repo,
+        "gitlab_branch": gitlab_branch,
+        "status": "placeholder_success",
+        "note": "GitLab push is not yet enabled. See code comments for implementation details."
+    }
+
+
 @app.delete("/analysis/{session_id}")
 async def delete_session(session_id: str):
     """Delete a session and its associated files."""
@@ -839,31 +1028,8 @@ async def list_sessions():
 
 
 # ============================================================================
-# Startup/Shutdown
+# Main
 # ============================================================================
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize on startup."""
-    print("Statistical Analysis Agent API started")
-    print(f"Sessions directory: {SESSIONS_DIR.absolute()}")
-
-    # Load persisted sessions
-    metadata = load_session_metadata()
-    for sid, meta in metadata.items():
-        # Restore session metadata (without full state)
-        sessions[sid] = {
-            **meta,
-            "state": {}  # State will be loaded on demand
-        }
-    print(f"Loaded {len(sessions)} persisted session(s)")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown."""
-    print("Shutting down...")
-
 
 if __name__ == "__main__":
     import uvicorn

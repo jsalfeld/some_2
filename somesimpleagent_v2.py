@@ -245,11 +245,49 @@ Please provide:
                     break
         analysis_objective = '\n'.join(objective_lines)
 
+    # Check data compatibility with analysis requirements
+    compatibility_prompt = """Review the task and available data to check compatibility.
+
+Can the available data support this analysis? Verify:
+1. Does the data contain the required columns/variables for the planned methods?
+2. Is there sufficient sample size for the statistical tests?
+3. Are there any fundamental mismatches between task requirements and available data?
+
+Respond with ONLY:
+- "COMPATIBLE: [brief reason]" if the analysis is feasible with available data
+- "INCOMPATIBLE: [explain what specific data/columns are missing]" if data is insufficient"""
+
+    compatibility_messages = [
+        SystemMessage(content=compatibility_prompt),
+        HumanMessage(content=f"""Task: {task}
+
+Available Data Summary:
+{data_summary}
+
+Planned Analysis:
+{analysis_plan}
+
+Assess data compatibility.""")
+    ]
+
+    compatibility_response = llm.invoke(compatibility_messages)
+    compatibility_assessment = compatibility_response.content.strip()
+
+    # If data is incompatible, prepend warning to objective
+    # Check for INCOMPATIBLE first (to avoid substring match with COMPATIBLE)
+    data_compatible = not compatibility_assessment.upper().startswith("INCOMPATIBLE")
+    if not data_compatible:
+        analysis_objective = f"⚠️ DATA COMPATIBILITY ISSUE:\n{compatibility_assessment}\n\n{analysis_objective}"
+
     # Log the reasoning
     thought = f"""Task Interpretation: {task}
 
 Full Analysis Plan Generated:
 {analysis_plan}
+
+Data Compatibility Check:
+{compatibility_assessment}
+Status: {"✓ Compatible" if data_compatible else "✗ Incompatible - analysis may fail"}
 
 Extracted Objective (2-3 sentences):
 {analysis_objective}
@@ -285,6 +323,7 @@ def write_analysis_code(state: StatisticalAnalysisState) -> StatisticalAnalysisS
         system_prompt = """You are an expert statistical programmer. Write Python code to perform statistical analysis.
 
 Requirements:
+- Include ALL necessary imports at the top (os, pandas, numpy, matplotlib, scipy, etc.)
 - Load the data from the specified file path (file is in current working directory)
 - Perform appropriate statistical tests and validation
 - Check statistical assumptions (normality, homogeneity, independence, etc.)
@@ -298,6 +337,14 @@ Requirements:
   * Assumption check results
 - Handle missing data appropriately
 - Use libraries like pandas, numpy, scipy, statsmodels, matplotlib, seaborn
+
+**CRITICAL FILE HANDLING:**
+1. ALWAYS sanitize column names before using in filenames:
+   - Replace special characters (/, \\, :, *, ?, ", <, >, |, spaces) with underscores
+   - Example: column "Close/Last" must become "Close_Last" in filenames
+   - Use: safe_name = col.replace('/', '_').replace('\\', '_').replace(' ', '_')
+2. Check if output_dir variable exists in scope, if yes use f"{output_dir}/filename.png"
+3. Never use column names directly in file paths without sanitizing
 
 Only output the Python code without explanations or markdown formatting.
 The code should be production-ready and include error handling."""
@@ -325,6 +372,14 @@ IMPORTANT: Save all plots to the current directory with descriptive names like '
         # Subsequent iterations - improve based on validation feedback
         system_prompt = """You are an expert statistical programmer. Based on the validation feedback,
 improve the analysis code. Fix any errors, address failed assumptions, or enhance the analysis.
+
+**CRITICAL FILE HANDLING:**
+1. Include ALL necessary imports (os, pandas, numpy, matplotlib, scipy, etc.)
+2. ALWAYS sanitize column names before using in filenames:
+   - Replace special characters (/, \\, :, *, ?, ", <, >, |, spaces) with underscores
+   - Example: "Close/Last" → "Close_Last"
+   - Use: safe_name = col.replace('/', '_').replace('\\', '_').replace(' ', '_')
+3. Never use column names directly in file paths without sanitizing
 
 Only output the Python code without explanations or markdown formatting."""
 
@@ -547,6 +602,44 @@ def compile_report_content(state: StatisticalAnalysisState) -> StatisticalAnalys
     This is separate from validation - it extracts detailed report sections with actual data and results.
     """
 
+    # GUARD: Don't compile report if execution failed or produced no output
+    execution_error = state.get('execution_error', '')
+    execution_result = state.get('execution_result', '').strip()
+
+    if execution_error or not execution_result or len(execution_result) < 50:
+        # Check if there was a data compatibility issue
+        analysis_objective = state.get('analysis_objective', '')
+        has_compatibility_issue = '⚠️ DATA COMPATIBILITY ISSUE' in analysis_objective
+
+        thought = f"""Cannot compile report - analysis execution failed or produced no meaningful output.
+
+Execution Error: {execution_error if execution_error else 'None'}
+Execution Output Length: {len(execution_result)} characters
+Data Compatibility Issue Detected: {has_compatibility_issue}
+
+The analysis did not complete successfully. Report compilation skipped."""
+
+        reasoning_log = add_thought(state, "compile_report_content", thought)
+
+        # Preserve compatibility warning if it exists
+        if has_compatibility_issue:
+            # Extract the compatibility message
+            compatibility_msg = analysis_objective.split('\n\n')[0] if '\n\n' in analysis_objective else analysis_objective
+
+            details_msg = f"{compatibility_msg}\n\nThe analysis could not proceed due to insufficient or incompatible data. The provided dataset does not contain the required variables or structure needed for the requested analysis."
+            conclusions_msg = f"Analysis cannot be completed - data compatibility issue prevents execution of the planned statistical methods."
+        else:
+            details_msg = "Analysis could not be completed. The code either failed to execute or did not produce valid results. Please check that the data file is accessible and compatible with the requested analysis."
+            conclusions_msg = "No conclusions available - analysis execution failed."
+
+        return {
+            **state,
+            "analysis_details": details_msg,
+            "analysis_conclusions": conclusions_msg,
+            "is_valid": False,  # Mark as invalid since analysis failed
+            "reasoning_log": reasoning_log
+        }
+
     system_prompt = """You are a report compiler. Create a comprehensive, self-contained analysis report.
 
 Extract and format EXACTLY THREE sections based on the ACTUAL RESULTS. Keep sections STRICTLY SEPARATE:
@@ -559,20 +652,22 @@ DO NOT include methods, results, or conclusions here!
 
 === SECTION 2: ANALYSIS DETAILS ===
 (Comprehensive methodology and results):
-- use Markdown or HTML formatting for clarity
-- Description of input data (actual sample size, variables examined)
-- Statistical methods and tests performed (name SPECIFIC tests used)
-- Actual test results with NUMBERS (test statistics, p-values, confidence intervals)
-- Visualizations or .png files created (list actual plot filenames)
-- Key numeric results in tables or bullet points
+* use Markdown or HTML formatting for clarity
+* Description of input data (actual sample size, variables examined)
+* Statistical methods and tests performed (name SPECIFIC tests used)
+* Actual test results with NUMBERS (test statistics, p-values, confidence intervals)
+* Visualizations or .png files created (list actual plot filenames)
+* Key numeric results in tables or bullet points
+* IMPORTANT: Use asterisk (*) for bullet points, NOT dashes (-)
 DO NOT include the objective or final conclusions here!
 
 === SECTION 3: CONCLUSIONS ===
 (Answer the objective - keep brief):
-- Direct answer to the research question stated in objective
-- Statistical evidence supporting conclusion (cite specific p-values/test results)
-- Practical interpretation of results
-- Key limitations (1-2 sentences)
+* Direct answer to the research question stated in objective
+* Statistical evidence supporting conclusion (cite specific p-values/test results)
+* Practical interpretation of results
+* Key limitations (1-2 sentences)
+* IMPORTANT: Use asterisk (*) for bullet points, NOT dashes (-)
 DO NOT repeat methodology details here!
 
 CRITICAL FORMATTING RULES:
@@ -694,8 +789,16 @@ def generate_report(state: StatisticalAnalysisState) -> StatisticalAnalysisState
 
         # Generate title from task
         task = state.get('task', 'Statistical Analysis')
-        title = task.split('.')[0][:60]
-        if len(task.split('.')[0]) > 60:
+
+        # If this is a refinement, extract the original task for a cleaner title
+        if 'ORIGINAL TASK:' in task:
+            # Extract text between "ORIGINAL TASK:" and the next section
+            task_for_title = task.split('ORIGINAL TASK:')[1].split('\n\n')[0].strip()
+        else:
+            task_for_title = task
+
+        title = task_for_title.split('.')[0][:60]
+        if len(task_for_title.split('.')[0]) > 60:
             title += "..."
 
         # Create label from title
@@ -708,8 +811,22 @@ def generate_report(state: StatisticalAnalysisState) -> StatisticalAnalysisState
         report_data['analysis_details'] = state.get("analysis_details", "No details available")
         report_data['analysis_conclusions'] = state.get("analysis_conclusions", "No conclusions available")
 
+        # Configure YAML to use block style for multiline strings (more readable)
+        # Use a custom Dumper class to avoid global representer issues
+        class BlockDumper(yaml.SafeDumper):
+            pass
+
+        def str_representer(dumper, data):
+            if '\n' in data:
+                # Use literal block style (|) for multiline strings
+                # PyYAML will automatically add - or + based on trailing whitespace
+                return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+            return dumper.represent_scalar('tag:yaml.org,2002:str', data)
+
+        BlockDumper.add_representer(str, str_representer)
+
         # Save as YAML with proper formatting
-        report_content = yaml.dump(report_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        report_content = yaml.dump(report_data, Dumper=BlockDumper, default_flow_style=False, allow_unicode=True, sort_keys=False)
     else:
         # Fallback: build YAML manually if template not found
         print("Warning: analysis_template.yml not found, using fallback format")
@@ -729,7 +846,21 @@ def generate_report(state: StatisticalAnalysisState) -> StatisticalAnalysisState
             'analysis_conclusions': state.get("analysis_conclusions", "No conclusions available")
         }
 
-        report_content = yaml.dump(report_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        # Configure YAML to use block style for multiline strings (more readable)
+        # Use a custom Dumper class to avoid global representer issues
+        class BlockDumper(yaml.SafeDumper):
+            pass
+
+        def str_representer(dumper, data):
+            if '\n' in data:
+                # Use literal block style (|) for multiline strings
+                # PyYAML will automatically add - or + based on trailing whitespace
+                return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+            return dumper.represent_scalar('tag:yaml.org,2002:str', data)
+
+        BlockDumper.add_representer(str, str_representer)
+
+        report_content = yaml.dump(report_data, Dumper=BlockDumper, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     # ========================================================================
     # 2. Build the AGENT REASONING file (separate)

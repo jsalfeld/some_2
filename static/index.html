@@ -434,6 +434,32 @@
             font-size: 13px;
         }
 
+        .gitlab-push-btn {
+            width: 100%;
+            padding: 12px;
+            background: #FC6D26;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            margin-top: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .gitlab-push-btn:hover:not(:disabled) {
+            background: #E24329;
+        }
+
+        .gitlab-push-btn:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+        }
+
         /* ============================================================
            MODAL
            ============================================================ */
@@ -508,6 +534,7 @@
         }
 
         .form-group input[type="file"],
+        .form-group input[type="text"],
         .form-group input[type="number"],
         .form-group textarea {
             width: 100%;
@@ -632,6 +659,16 @@
                         <label>Max Iterations</label>
                         <input type="number" id="maxIterations" value="3" min="1" max="10">
                     </div>
+                    <div class="form-group">
+                        <label>GitLab Repository (Optional)</label>
+                        <input type="text" id="gitlabRepo" placeholder="https://gitlab.com/username/repo.git">
+                        <small style="color: #666; font-size: 12px;">Optionally link a GitLab repo to push artifacts after analysis</small>
+                    </div>
+                    <div class="form-group">
+                        <label>GitLab Branch (Optional)</label>
+                        <input type="text" id="gitlabBranch" placeholder="main" value="main">
+                        <small style="color: #666; font-size: 12px;">Branch to push artifacts to (default: main)</small>
+                    </div>
                     <button type="submit" class="submit-btn">Start Analysis</button>
                 </form>
             </div>
@@ -660,6 +697,38 @@
                         ✗ Reject & Stop
                     </button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- GITLAB PUSH MODAL -->
+    <div class="modal" id="gitlabPushModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📤 Push to GitLab</h2>
+                <button class="close-modal" onclick="closeGitlabPushModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form onsubmit="confirmGitlabPush(event)">
+                    <div class="form-group">
+                        <label>GitLab Repository</label>
+                        <input type="text" id="gitlabPushRepo" placeholder="https://gitlab.com/username/repo.git" required>
+                        <small style="color: #666; font-size: 12px;">The repository where artifacts will be pushed</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Branch</label>
+                        <input type="text" id="gitlabPushBranch" placeholder="main" value="main" required>
+                        <small style="color: #666; font-size: 12px;">The branch to commit to</small>
+                    </div>
+                    <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #FC6D26;">
+                        <small style="color: #666; font-size: 12px;">
+                            <strong>Note:</strong> This will create a commit with all analysis artifacts (reports, code, plots) organized into separate directories.
+                        </small>
+                    </div>
+                    <button type="submit" class="submit-btn" style="background: #FC6D26;">
+                        📤 Push Artifacts
+                    </button>
+                </form>
             </div>
         </div>
     </div>
@@ -795,6 +864,8 @@
             const fileInput = document.getElementById('dataFile');
             const taskInput = document.getElementById('taskInput');
             const maxIterations = document.getElementById('maxIterations').value;
+            const gitlabRepo = document.getElementById('gitlabRepo').value.trim();
+            const gitlabBranch = document.getElementById('gitlabBranch').value.trim();
 
             const file = fileInput.files[0];
             const task = taskInput.value.trim();
@@ -815,6 +886,12 @@
                 formData.append('file', file);
                 formData.append('task', task);
                 formData.append('max_iterations', maxIterations);
+                if (gitlabRepo) {
+                    formData.append('gitlab_repo', gitlabRepo);
+                    if (gitlabBranch) {
+                        formData.append('gitlab_branch', gitlabBranch);
+                    }
+                }
 
                 const response = await fetch(`${API_BASE}/analysis/new`, {
                     method: 'POST',
@@ -996,7 +1073,8 @@
 
             const statusEmoji = data.status === 'cancelled' ? '⏹' : '✅';
             const statusText = data.status === 'cancelled' ? 'stopped' : data.status;
-            addSystemMessage(`${statusEmoji} Analysis ${statusText}! ${data.is_valid ? 'Results validated.' : ''}`);
+            const validationMsg = data.is_valid ? 'Results validated.' : '⚠️ Warning: Analysis completed with issues. Check report for details.';
+            addSystemMessage(`${statusEmoji} Analysis ${statusText}! ${validationMsg}`);
 
             loadSessions();
             loadArtifacts(); // Load artifacts immediately on completion
@@ -1201,16 +1279,21 @@
             }
 
             try {
-                const response = await fetch(`${API_BASE}/analysis/${currentSessionId}/artifacts`);
-                const artifacts = await response.json();
+                const [artifactsResponse, statusResponse] = await Promise.all([
+                    fetch(`${API_BASE}/analysis/${currentSessionId}/artifacts`),
+                    fetch(`${API_BASE}/analysis/${currentSessionId}/status`)
+                ]);
 
-                displayArtifacts(artifacts);
+                const artifacts = await artifactsResponse.json();
+                const status = await statusResponse.json();
+
+                displayArtifacts(artifacts, status);
             } catch (error) {
                 console.error('Error loading artifacts:', error);
             }
         }
 
-        function displayArtifacts(artifacts) {
+        function displayArtifacts(artifacts, status) {
             const content = document.getElementById('artifactsContent');
             let html = '';
 
@@ -1293,6 +1376,16 @@
                 html += '</div>';
             }
 
+            // GitLab Push Button
+            if (status && (status.status === 'completed' || status.status === 'cancelled')) {
+                html += `
+                    <button class="gitlab-push-btn" id="gitlabPushBtn" onclick="openGitlabPushModal()">
+                        <span>📤</span>
+                        <span>Push to GitLab</span>
+                    </button>
+                `;
+            }
+
             content.innerHTML = html;
         }
 
@@ -1308,6 +1401,80 @@
                     loadArtifacts();
                 }
             }, 2000);
+        }
+
+        // ====================================================================
+        // GITLAB INTEGRATION
+        // ====================================================================
+
+        function openGitlabPushModal() {
+            if (!currentSessionId) return;
+
+            // Pre-fill with existing GitLab repo if available
+            fetch(`${API_BASE}/analysis/${currentSessionId}/status`)
+                .then(response => response.json())
+                .then(status => {
+                    if (status.gitlab_repo) {
+                        document.getElementById('gitlabPushRepo').value = status.gitlab_repo;
+                    }
+                    if (status.gitlab_branch) {
+                        document.getElementById('gitlabPushBranch').value = status.gitlab_branch;
+                    }
+                })
+                .catch(err => console.error('Error fetching status:', err));
+
+            document.getElementById('gitlabPushModal').classList.add('active');
+        }
+
+        function closeGitlabPushModal() {
+            document.getElementById('gitlabPushModal').classList.remove('active');
+        }
+
+        async function confirmGitlabPush(event) {
+            event.preventDefault();
+
+            if (!currentSessionId) return;
+
+            const gitlabRepo = document.getElementById('gitlabPushRepo').value.trim();
+            const gitlabBranch = document.getElementById('gitlabPushBranch').value.trim();
+
+            if (!gitlabRepo || !gitlabBranch) {
+                alert('Please provide both repository URL and branch');
+                return;
+            }
+
+            // Close modal
+            closeGitlabPushModal();
+
+            // Show system message
+            addSystemMessage(`📤 Pushing artifacts to ${gitlabRepo} (branch: ${gitlabBranch})...`);
+
+            try {
+                const response = await fetch(`${API_BASE}/analysis/${currentSessionId}/push-to-gitlab`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        gitlab_repo: gitlabRepo,
+                        gitlab_branch: gitlabBranch
+                    })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    addSystemMessage(`✓ Successfully pushed artifacts to GitLab!`);
+                    if (result.commit_url) {
+                        addSystemMessage(`Commit URL: ${result.commit_url}`);
+                    }
+                } else {
+                    throw new Error(result.detail || 'Failed to push to GitLab');
+                }
+            } catch (error) {
+                console.error('Error pushing to GitLab:', error);
+                addSystemMessage(`✗ Error pushing to GitLab: ${error.message}`);
+            }
         }
 
         // ====================================================================
