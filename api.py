@@ -15,7 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
-from contextlib import asynccontextmanager
 import uuid
 import asyncio
 import json
@@ -27,47 +26,11 @@ import os
 # Import our statistical agent (v2 with improved reporting)
 from somesimpleagent_v2 import create_statistical_agent, StatisticalAnalysisState
 
-# Session storage and directories (needed before lifespan)
-sessions: Dict[str, Dict[str, Any]] = {}
-SESSIONS_DIR = Path("sessions")
-SESSION_METADATA_FILE = SESSIONS_DIR / "sessions_metadata.json"
-
-def load_session_metadata():
-    """Load session metadata from disk."""
-    if SESSION_METADATA_FILE.exists():
-        with open(SESSION_METADATA_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-# Lifespan context manager for startup/shutdown
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    SESSIONS_DIR.mkdir(exist_ok=True)
-    print("Statistical Analysis Agent API started")
-    print(f"Sessions directory: {SESSIONS_DIR.absolute()}")
-
-    # Load persisted sessions
-    metadata = load_session_metadata()
-    for sid, meta in metadata.items():
-        # Restore session metadata (without full state)
-        sessions[sid] = {
-            **meta,
-            "state": {}  # State will be loaded on demand
-        }
-    print(f"Loaded {len(sessions)} persisted session(s)")
-
-    yield
-
-    # Shutdown
-    print("Shutting down...")
-
 # Initialize FastAPI
 app = FastAPI(
     title="Statistical Analysis Agent API",
     description="AI-powered statistical analysis with reasoning transparency",
-    version="1.0.0",
-    lifespan=lifespan
+    version="1.0.0"
 )
 
 # Enable CORS for frontend
@@ -96,6 +59,16 @@ REQUIRE_CODE_APPROVAL = os.getenv('REQUIRE_CODE_APPROVAL', 'false').lower() == '
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Session storage (in production, use Redis or database)
+sessions: Dict[str, Dict[str, Any]] = {}
+
+# Directory for storing session files
+SESSIONS_DIR = Path("sessions")
+SESSIONS_DIR.mkdir(exist_ok=True)
+
+# Session metadata file for persistence
+SESSION_METADATA_FILE = SESSIONS_DIR / "sessions_metadata.json"
+
 
 def save_session_metadata():
     """Save session metadata to disk for persistence."""
@@ -118,6 +91,14 @@ def save_session_metadata():
 
     with open(SESSION_METADATA_FILE, 'w') as f:
         json.dump(metadata, f, indent=2)
+
+
+def load_session_metadata():
+    """Load session metadata from disk."""
+    if SESSION_METADATA_FILE.exists():
+        with open(SESSION_METADATA_FILE, 'r') as f:
+            return json.load(f)
+    return {}
 
 
 # ============================================================================
@@ -264,6 +245,22 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
 
     if final_state is None:
         final_state = agent.invoke(state)
+
+    # Validate that agent actually ran before marking as completed
+    reasoning_log = final_state.get("reasoning_log", [])
+    has_code = bool(final_state.get("code", "").strip())
+    has_analysis = bool(final_state.get("analysis_details", "").strip())
+
+    # Check if agent actually did work
+    if not reasoning_log or len(reasoning_log) == 0:
+        # No nodes executed - agent never ran
+        print(f"  ERROR: Agent never executed any nodes for session {session_id[:8]}")
+        sessions[session_id]["state"] = final_state
+        sessions[session_id]["status"] = "failed"
+        sessions[session_id]["error"] = "Agent workflow did not execute. Check API key and configuration."
+        sessions[session_id]["updated_at"] = datetime.now().isoformat()
+        save_session_metadata()
+        return final_state
 
     # Update session
     sessions[session_id]["state"] = final_state
@@ -461,7 +458,10 @@ async def stream_reasoning_events(session_id: str):
             state = current_session["state"]
             reasoning_log = state.get("reasoning_log", [])
 
-            # Send new reasoning entries
+            # Check if completed
+            is_completed = current_session["status"] in ["completed", "failed", "cancelled"]
+
+            # Send new reasoning entries (including any final ones if completed)
             if len(reasoning_log) > last_count:
                 for entry in reasoning_log[last_count:]:
                     event = {
@@ -475,8 +475,8 @@ async def stream_reasoning_events(session_id: str):
 
                 last_count = len(reasoning_log)
 
-            # Check if completed
-            if current_session["status"] in ["completed", "failed"]:
+            # Send completion event after all reasoning entries
+            if is_completed:
                 completion_event = {
                     "type": "completion",
                     "session_id": session_id,
@@ -1025,6 +1025,33 @@ async def list_sessions():
     session_list.sort(key=lambda x: x["updated_at"], reverse=True)
 
     return {"sessions": session_list}
+
+
+# ============================================================================
+# Startup/Shutdown
+# ============================================================================
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize on startup."""
+    print("Statistical Analysis Agent API started")
+    print(f"Sessions directory: {SESSIONS_DIR.absolute()}")
+
+    # Load persisted sessions
+    metadata = load_session_metadata()
+    for sid, meta in metadata.items():
+        # Restore session metadata (without full state)
+        sessions[sid] = {
+            **meta,
+            "state": {}  # State will be loaded on demand
+        }
+    print(f"Loaded {len(sessions)} persisted session(s)")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown."""
+    print("Shutting down...")
 
 
 # ============================================================================
