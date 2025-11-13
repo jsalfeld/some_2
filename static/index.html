@@ -1183,7 +1183,6 @@
 
             const message = document.createElement('div');
             message.className = 'message';
-            message.dataset.timestamp = messageTime.getTime(); // Store timestamp for sorting
             message.innerHTML = `
                 <div class="message-header">
                     <div class="message-avatar ${type}">${avatarMap[type]}</div>
@@ -1197,38 +1196,11 @@
                 </div>
             `;
 
-            // Insert in chronological order
-            insertMessageInOrder(chatMessages, message);
+            // Simply append - messages arrive in chronological order
+            chatMessages.appendChild(message);
             chatMessages.scrollTop = chatMessages.scrollHeight;
 
             return message;
-        }
-
-        function insertMessageInOrder(container, newMessage) {
-            const newTimestamp = parseInt(newMessage.dataset.timestamp);
-            const messages = container.querySelectorAll('.message');
-
-            // If no messages exist, just append
-            if (messages.length === 0) {
-                container.appendChild(newMessage);
-                return;
-            }
-
-            let inserted = false;
-            for (let i = messages.length - 1; i >= 0; i--) {
-                const existingTimestamp = parseInt(messages[i].dataset.timestamp);
-                if (existingTimestamp <= newTimestamp) {
-                    // Found the right place - insert after this message
-                    messages[i].insertAdjacentElement('afterend', newMessage);
-                    inserted = true;
-                    break;
-                }
-            }
-
-            // If not inserted, new message is oldest - prepend at beginning
-            if (!inserted) {
-                container.insertBefore(newMessage, messages[0]);
-            }
         }
 
         function updateStatusIndicator(statusClass, text) {
@@ -1268,7 +1240,6 @@
 
             const message = document.createElement('div');
             message.className = 'message';
-            message.dataset.timestamp = messageTime.getTime(); // Store timestamp for chronological ordering
 
             message.innerHTML = `
                 <div class="message-header">
@@ -1287,8 +1258,8 @@
                 </div>
             `;
 
-            // Insert in chronological order
-            insertMessageInOrder(chatMessages, message);
+            // Simply append - messages arrive in chronological order
+            chatMessages.appendChild(message);
 
             // Auto-expand the latest reasoning card and collapse all others
             const allReasoningCards = chatMessages.querySelectorAll('.reasoning-card');
