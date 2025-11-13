@@ -802,14 +802,14 @@ def generate_report(state: StatisticalAnalysisState) -> StatisticalAnalysisState
             title += "..."
 
         # Create label from title
-        label = "label:" + title.lower().replace(' ', '_').replace(',', '').replace(':', '').replace('(', '').replace(')', '')[:40]
+        label = "analysis:" + title.lower().replace(' ', '_').replace(',', '').replace(':', '').replace('(', '').replace(')', '')[:40]
 
         # Fill in the template with actual values
-        report_data['analysis_title'] = title
-        report_data['analysis_label'] = label
-        report_data['analysis_objective'] = state.get("analysis_objective", "Not specified")
-        report_data['analysis_details'] = state.get("analysis_details", "No details available")
-        report_data['analysis_conclusions'] = state.get("analysis_conclusions", "No conclusions available")
+        report_data['title'] = title
+        report_data['label'] = label
+        report_data['objective'] = state.get("analysis_objective", "Not specified")
+        report_data['details'] = state.get("analysis_details", "No details available")
+        report_data['conclusion'] = state.get("analysis_conclusions", "No conclusions available")
 
         # Configure YAML to use block style for multiline strings (more readable)
         # Use a custom Dumper class to avoid global representer issues
