@@ -128,6 +128,27 @@
             color: #2c3e50;
         }
 
+        .status-indicator {
+            font-size: 13px;
+            color: #666;
+            margin-top: 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-indicator.analyzing {
+            color: #3498db;
+        }
+
+        .status-indicator.completed {
+            color: #27ae60;
+        }
+
+        .status-indicator.failed {
+            color: #e74c3c;
+        }
+
         .mode-selector {
             display: flex;
             gap: 8px;
@@ -598,7 +619,10 @@
         <!-- CENTER CHAT AREA -->
         <div class="chat-area">
             <div class="chat-header">
-                <div class="chat-title" id="chatTitle">Statistical Analysis Agent</div>
+                <div style="flex: 1;">
+                    <div class="chat-title" id="chatTitle">Statistical Analysis Agent</div>
+                    <div id="statusIndicator" class="status-indicator" style="display: none;"></div>
+                </div>
                 <div style="display: flex; gap: 10px; align-items: center;">
                     <button id="stopBtn" class="stop-btn" onclick="stopAnalysis()" style="display: none;">⏹ Stop</button>
                     <div class="mode-selector">
@@ -837,21 +861,41 @@
                 item.classList.toggle('active', item.textContent.includes(sessionId.substring(0, 8)));
             });
 
-            // Clear chat and show system message
+            // Clear chat
             clearChat();
-            addSystemMessage(`Loading session ${sessionId.substring(0, 8)}...`);
 
-            // Enable chat
-            enableChat();
+            try {
+                // Fetch session status
+                const response = await fetch(`${API_BASE}/analysis/${sessionId}/status`);
+                const status = await response.json();
 
-            // Update title
-            document.getElementById('chatTitle').textContent = `Session ${sessionId.substring(0, 8)}`;
+                // Enable chat
+                enableChat();
 
-            // Load artifacts immediately
-            loadArtifacts();
+                // Update title
+                document.getElementById('chatTitle').textContent = `Session ${sessionId.substring(0, 8)}`;
 
-            // Start polling for artifact updates
-            startArtifactsPolling();
+                // Load artifacts immediately
+                loadArtifacts();
+
+                // Start polling for artifact updates
+                startArtifactsPolling();
+
+                // If session is still processing, start streaming
+                if (status.status === 'processing') {
+                    startReasoningStream(sessionId);
+                } else if (status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled') {
+                    // Session already finished - show status in status indicator
+                    const statusClass = status.status === 'failed' ? 'failed' : 'completed';
+                    const statusEmoji = status.status === 'cancelled' ? '⏹' : status.status === 'failed' ? '❌' : '✅';
+                    const statusText = status.status === 'cancelled' ? 'Analysis stopped' : status.status === 'failed' ? 'Analysis failed' : 'Analysis completed';
+                    const validationMsg = status.is_valid ? '' : ' (with issues)';
+                    updateStatusIndicator(statusClass, `${statusEmoji} ${statusText}${validationMsg}`);
+                }
+            } catch (error) {
+                console.error('Error loading session:', error);
+                updateStatusIndicator('failed', `❌ Error loading session: ${error.message}`);
+            }
         }
 
         // ====================================================================
@@ -879,9 +923,6 @@
             clearChat();
 
             try {
-                // Show starting message
-                addSystemMessage('Starting new analysis...');
-
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('task', task);
@@ -925,7 +966,7 @@
 
             } catch (error) {
                 console.error('Error starting analysis:', error);
-                addSystemMessage('Error starting analysis: ' + error.message);
+                updateStatusIndicator('failed', `❌ Error starting analysis: ${error.message}`);
             }
         }
 
@@ -938,7 +979,8 @@
                 eventSource.close();
             }
 
-            addSystemMessage('Agent is working... <span class="spinner"></span>');
+            // Update status indicator instead of showing system message
+            updateStatusIndicator('analyzing', 'Agent is thinking...');
 
             // Show stop button
             document.getElementById('stopBtn').style.display = 'block';
@@ -979,8 +1021,8 @@
                     showCodeApprovalModal();
                 }
 
-                // Check if analysis completed or was cancelled
-                if ((status.status === 'completed' || status.status === 'cancelled') && eventSource) {
+                // Check if analysis completed, failed, or was cancelled
+                if ((status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled') && eventSource) {
                     handleCompletion({ status: status.status, is_valid: status.is_valid });
                 }
             } catch (error) {
@@ -1071,10 +1113,12 @@
             stopBtn.textContent = '⏹ Stop';
             stopBtn.style.display = 'none';
 
-            const statusEmoji = data.status === 'cancelled' ? '⏹' : '✅';
-            const statusText = data.status === 'cancelled' ? 'stopped' : data.status;
-            const validationMsg = data.is_valid ? 'Results validated.' : '⚠️ Warning: Analysis completed with issues. Check report for details.';
-            addSystemMessage(`${statusEmoji} Analysis ${statusText}! ${validationMsg}`);
+            // Update status indicator based on completion status
+            const statusClass = data.status === 'failed' ? 'failed' : 'completed';
+            const statusEmoji = data.status === 'cancelled' ? '⏹' : data.status === 'failed' ? '❌' : '✅';
+            const statusText = data.status === 'cancelled' ? 'Analysis stopped' : data.status === 'failed' ? 'Analysis failed' : 'Analysis completed';
+            const validationMsg = data.is_valid ? '' : ' (with issues)';
+            updateStatusIndicator(statusClass, `${statusEmoji} ${statusText}${validationMsg}`);
 
             loadSessions();
             loadArtifacts(); // Load artifacts immediately on completion
@@ -1112,6 +1156,7 @@
 
         function clearChat() {
             document.getElementById('chatMessages').innerHTML = '';
+            hideStatusIndicator();  // Hide status indicator when clearing chat
         }
 
         function enableChat() {
@@ -1119,7 +1164,7 @@
             document.getElementById('sendBtn').disabled = false;
         }
 
-        function addMessage(type, sender, text) {
+        function addMessage(type, sender, text, timestamp = null) {
             const chatMessages = document.getElementById('chatMessages');
 
             // Remove empty state
@@ -1134,14 +1179,17 @@
                 system: 'ℹ️'
             };
 
+            const messageTime = timestamp ? new Date(timestamp) : new Date();
+
             const message = document.createElement('div');
             message.className = 'message';
+            message.dataset.timestamp = messageTime.getTime(); // Store timestamp for sorting
             message.innerHTML = `
                 <div class="message-header">
                     <div class="message-avatar ${type}">${avatarMap[type]}</div>
                     <div class="message-meta">
                         <div class="message-sender">${sender}</div>
-                        <div class="message-time">${new Date().toLocaleTimeString()}</div>
+                        <div class="message-time">${messageTime.toLocaleTimeString()}</div>
                     </div>
                 </div>
                 <div class="message-content">
@@ -1149,20 +1197,61 @@
                 </div>
             `;
 
-            chatMessages.appendChild(message);
+            // Insert in chronological order
+            insertMessageInOrder(chatMessages, message);
             chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            return message;
+        }
+
+        function insertMessageInOrder(container, newMessage) {
+            const newTimestamp = parseInt(newMessage.dataset.timestamp);
+            const messages = container.querySelectorAll('.message');
+
+            // If no messages exist, just append
+            if (messages.length === 0) {
+                container.appendChild(newMessage);
+                return;
+            }
+
+            let inserted = false;
+            for (let i = messages.length - 1; i >= 0; i--) {
+                const existingTimestamp = parseInt(messages[i].dataset.timestamp);
+                if (existingTimestamp <= newTimestamp) {
+                    // Found the right place - insert after this message
+                    messages[i].insertAdjacentElement('afterend', newMessage);
+                    inserted = true;
+                    break;
+                }
+            }
+
+            // If not inserted, new message is oldest - prepend at beginning
+            if (!inserted) {
+                container.insertBefore(newMessage, messages[0]);
+            }
+        }
+
+        function updateStatusIndicator(statusClass, text) {
+            const indicator = document.getElementById('statusIndicator');
+            indicator.className = `status-indicator ${statusClass}`;
+            indicator.innerHTML = text + (statusClass === 'analyzing' ? ' <span class="spinner"></span>' : '');
+            indicator.style.display = 'flex';
+        }
+
+        function hideStatusIndicator() {
+            document.getElementById('statusIndicator').style.display = 'none';
         }
 
         function addUserMessage(text) {
-            addMessage('user', 'You', text);
+            return addMessage('user', 'You', text);
         }
 
         function addAgentMessage(text) {
-            addMessage('agent', 'Agent', text);
+            return addMessage('agent', 'Agent', text);
         }
 
         function addSystemMessage(text) {
-            addMessage('system', 'System', text);
+            return addMessage('system', 'System', text);
         }
 
         function addReasoningCard(data) {
@@ -1174,17 +1263,19 @@
                 emptyState.remove();
             }
 
+            const cardId = `reasoning-${Date.now()}-${Math.random()}`;
+            const messageTime = new Date(data.timestamp);
+
             const message = document.createElement('div');
             message.className = 'message';
-
-            const cardId = `reasoning-${Date.now()}-${Math.random()}`;
+            message.dataset.timestamp = messageTime.getTime(); // Store timestamp for chronological ordering
 
             message.innerHTML = `
                 <div class="message-header">
                     <div class="message-avatar agent">🤖</div>
                     <div class="message-meta">
                         <div class="message-sender">Agent (Iteration ${data.iteration})</div>
-                        <div class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</div>
+                        <div class="message-time">${messageTime.toLocaleTimeString()}</div>
                     </div>
                 </div>
                 <div class="reasoning-card" id="${cardId}">
@@ -1196,7 +1287,18 @@
                 </div>
             `;
 
-            chatMessages.appendChild(message);
+            // Insert in chronological order
+            insertMessageInOrder(chatMessages, message);
+
+            // Auto-expand the latest reasoning card and collapse all others
+            const allReasoningCards = chatMessages.querySelectorAll('.reasoning-card');
+            allReasoningCards.forEach(card => {
+                if (card.id !== cardId) {
+                    card.classList.remove('expanded');
+                }
+            });
+            document.getElementById(cardId).classList.add('expanded');
+
             chatMessages.scrollTop = chatMessages.scrollHeight;
 
             // Load artifacts when new reasoning arrives (code execution might have created files)
@@ -1241,9 +1343,7 @@
                     addAgentMessage(result.answer);
 
                 } else {
-                    // Refine analysis
-                    addSystemMessage('Starting refinement...');
-
+                    // Refine analysis - keep history, just add new reasoning cards
                     const response = await fetch(`${API_BASE}/analysis/${currentSessionId}/refine`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
