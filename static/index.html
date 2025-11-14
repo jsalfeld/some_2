@@ -18,9 +18,23 @@
             overflow: hidden;
         }
 
+        .disclaimer-banner {
+            background: #fff3cd;
+            border-bottom: 2px solid #ffc107;
+            padding: 12px 20px;
+            text-align: center;
+            font-size: 13px;
+            color: #856404;
+            z-index: 100;
+        }
+
+        .disclaimer-banner strong {
+            font-weight: 600;
+        }
+
         .container {
             display: flex;
-            height: 100vh;
+            height: calc(100vh - 45px);
         }
 
         /* ============================================================
@@ -604,6 +618,11 @@
     </style>
 </head>
 <body>
+    <!-- Disclaimer Banner -->
+    <div class="disclaimer-banner">
+        <strong>⚠️ Disclaimer:</strong> This tool generates statistical analyses using AI. Always review results carefully and verify with domain experts before making decisions.
+    </div>
+
     <div class="container">
         <!-- LEFT SIDEBAR -->
         <div class="left-sidebar">
@@ -757,6 +776,38 @@
         </div>
     </div>
 
+    <!-- DISCLAIMER MODAL (First Time Visit) -->
+    <div class="modal active" id="disclaimerModal" style="background: rgba(0, 0, 0, 0.8);">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header" style="background: #fff3cd; border-bottom: 2px solid #ffc107;">
+                <h2 style="color: #856404;">⚠️ Important Disclaimer</h2>
+            </div>
+            <div class="modal-body">
+                <div style="margin-bottom: 20px; line-height: 1.6; color: #333;">
+                    <p style="margin-bottom: 15px;">
+                        <strong>This Statistical Analysis Agent uses AI to generate analyses.</strong>
+                    </p>
+                    <p style="margin-bottom: 15px;">
+                        By using this tool, you acknowledge that:
+                    </p>
+                    <ul style="margin-left: 20px; margin-bottom: 15px;">
+                        <li style="margin-bottom: 8px;">AI-generated analyses may contain errors or biases</li>
+                        <li style="margin-bottom: 8px;">Results must be reviewed by qualified professionals before making decisions</li>
+                        <li style="margin-bottom: 8px;">This tool is for informational purposes only</li>
+                        <li style="margin-bottom: 8px;">You are responsible for validating all outputs</li>
+                        <li style="margin-bottom: 8px;">Sensitive data should be handled with appropriate security measures</li>
+                    </ul>
+                    <p style="margin-bottom: 15px; font-weight: 500; color: #856404;">
+                        Do not use this tool for critical decisions without proper expert review.
+                    </p>
+                </div>
+                <button onclick="acceptDisclaimer()" class="submit-btn" style="background: #ffc107; color: #333; font-weight: 600;">
+                    I Understand and Agree
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // State
         let currentSessionId = null;
@@ -767,6 +818,9 @@
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
+            // Check if user has accepted disclaimer
+            checkDisclaimer();
+
             loadSessions();
             setInterval(pollForUpdates, 1000);
 
@@ -785,6 +839,26 @@
                 }
             });
         });
+
+        // ====================================================================
+        // DISCLAIMER
+        // ====================================================================
+
+        function checkDisclaimer() {
+            const accepted = localStorage.getItem('disclaimerAccepted');
+            if (accepted === 'true') {
+                // User has already accepted, hide the modal
+                document.getElementById('disclaimerModal').classList.remove('active');
+            }
+            // Otherwise modal stays visible (it has 'active' class by default in HTML)
+        }
+
+        function acceptDisclaimer() {
+            // Save acceptance to localStorage
+            localStorage.setItem('disclaimerAccepted', 'true');
+            // Hide the modal
+            document.getElementById('disclaimerModal').classList.remove('active');
+        }
 
         // ====================================================================
         // MODAL
