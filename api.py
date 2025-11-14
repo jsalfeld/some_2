@@ -85,6 +85,8 @@ def save_session_metadata():
             "session_dir": session["session_dir"],
             "refinement_count": session.get("refinement_count", 0),
             "artifact_version": session.get("artifact_version", 0),  # Persist version counter
+            "require_code_approval": session.get("require_code_approval", False),  # Persist code approval setting
+            "feedback_link": session.get("feedback_link"),  # Persist feedback link
             "gitlab_repo": session.get("gitlab_repo"),  # Persist GitLab repo URL
             "gitlab_branch": session.get("gitlab_branch")  # Persist GitLab branch
         }
@@ -99,6 +101,28 @@ def load_session_metadata():
         with open(SESSION_METADATA_FILE, 'r') as f:
             return json.load(f)
     return {}
+
+
+def generate_feedback_link(session_id: str) -> str:
+    """
+    Generate a feedback link for a completed analysis session.
+
+    PLACEHOLDER FUNCTION - Customize this to generate your feedback link.
+
+    Examples:
+    - Google Forms: return f"https://forms.google.com/...?session={session_id}"
+    - Typeform: return f"https://form.typeform.com/...#session={session_id}"
+    - Custom survey: return f"https://your-domain.com/feedback?session={session_id}"
+
+    Args:
+        session_id: The session ID to include in the feedback link
+
+    Returns:
+        The feedback URL as a string
+    """
+    # CUSTOMIZE THIS URL TO YOUR FEEDBACK FORM
+    # Example with session ID embedded:
+    return f"https://example.com/feedback?session_id={session_id}"
 
 
 # ============================================================================
@@ -205,7 +229,9 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
                     last_node_name = node_name
 
                     # If code was just generated and approval is required, wait for approval
-                    if node_name == "write_analysis_code" and REQUIRE_CODE_APPROVAL:
+                    # Use session-level setting instead of global REQUIRE_CODE_APPROVAL
+                    session_requires_approval = sessions[session_id].get("require_code_approval", False)
+                    if node_name == "write_analysis_code" and session_requires_approval:
                         print(f"  Code approval required for session {session_id[:8]}")
                         sessions[session_id]["status"] = "awaiting_approval"
                         sessions[session_id]["approval_status"] = "pending"
@@ -266,6 +292,14 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
     sessions[session_id]["state"] = final_state
     sessions[session_id]["status"] = "completed"
     sessions[session_id]["updated_at"] = datetime.now().isoformat()
+
+    # NOTE: Feedback link is NOT generated here automatically
+    # This allows you to generate it asynchronously after completion
+    # Use the /analysis/{session_id}/set_feedback_link endpoint to set it when ready
+    # Or uncomment the lines below to generate it immediately:
+    # feedback_link = generate_feedback_link(session_id)
+    # sessions[session_id]["feedback_link"] = feedback_link
+    # print(f"  Generated feedback link: {feedback_link}")
 
     # The agent already saved files to session_dir
     # Create versioned copies for history
@@ -330,6 +364,7 @@ async def create_analysis(
     file: UploadFile = File(...),
     task: str = Form(...),
     max_iterations: int = Form(3),
+    require_code_approval: str = Form("false"),
     gitlab_repo: str = Form(None),
     gitlab_branch: str = Form("main")
 ):
@@ -338,6 +373,7 @@ async def create_analysis(
 
     - Upload a data file (CSV, Excel, etc.)
     - Provide an analysis task/question
+    - Optionally require code approval before execution
     - Optionally link a GitLab repository and branch for artifact pushing
     - Returns session_id to track progress
     """
@@ -371,6 +407,9 @@ async def create_analysis(
         "is_valid": False
     }
 
+    # Parse require_code_approval (comes as string from form)
+    require_code_approval_bool = require_code_approval.lower() == 'true'
+
     # Store session
     sessions[session_id] = {
         "session_id": session_id,
@@ -383,6 +422,7 @@ async def create_analysis(
         "session_dir": str(session_dir),
         "artifact_version": 0,  # Start at 0, will increment to 1 on first save
         "refinement_count": 0,
+        "require_code_approval": require_code_approval_bool,  # Store per-session code approval setting
         "gitlab_repo": gitlab_repo,  # Store GitLab repo URL if provided
         "gitlab_branch": gitlab_branch if gitlab_repo else None  # Store GitLab branch if repo provided
     }
@@ -425,6 +465,7 @@ async def get_status(session_id: str):
         "is_valid": state.get("is_valid", False),
         "has_errors": bool(state.get("execution_error", "")),
         "reasoning_entries": len(state.get("reasoning_log", [])),
+        "feedback_link": session.get("feedback_link"),  # Include feedback link if available
         "gitlab_repo": session.get("gitlab_repo"),  # Include GitLab repo if linked
         "gitlab_branch": session.get("gitlab_branch")  # Include GitLab branch if set
     }
@@ -542,11 +583,12 @@ Please refine the analysis based on the refinement request above."""
         # Keep: data_file_path, data_summary, reasoning_log (to maintain history)
     }
 
-    # Update session
+    # Update session (preserve require_code_approval setting)
     session["status"] = "processing"
     session["updated_at"] = datetime.now().isoformat()
     session["state"] = refinement_state
     session["refinement_count"] = session.get("refinement_count", 0) + 1
+    # Note: require_code_approval is preserved from the original session
 
     # Start refinement in background
     asyncio.create_task(run_analysis_async(session_id, refinement_state))
@@ -982,6 +1024,38 @@ Automated commit from Statistical Analysis Agent
         "gitlab_branch": gitlab_branch,
         "status": "placeholder_success",
         "note": "GitLab push is not yet enabled. See code comments for implementation details."
+    }
+
+
+@app.post("/analysis/{session_id}/set_feedback_link")
+async def set_feedback_link(session_id: str, feedback_url: str = Form(...)):
+    """
+    Set the feedback link for a session.
+
+    This allows you to generate and set the feedback link asynchronously
+    after analysis completion. Call this endpoint once your feedback link
+    is ready to be displayed to the user.
+
+    Args:
+        session_id: The session ID
+        feedback_url: The feedback URL to set for this session
+
+    Returns:
+        Confirmation with the set feedback link
+    """
+    session = get_session(session_id)
+
+    # Set the feedback link
+    session["feedback_link"] = feedback_url
+    session["updated_at"] = datetime.now().isoformat()
+
+    # Save metadata
+    save_session_metadata()
+
+    return {
+        "message": f"Feedback link set for session {session_id}",
+        "session_id": session_id,
+        "feedback_link": feedback_url
     }
 
 

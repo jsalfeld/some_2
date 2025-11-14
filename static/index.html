@@ -496,6 +496,87 @@
         }
 
         /* ============================================================
+           SETTINGS BUTTON
+           ============================================================ */
+        .settings-btn {
+            padding: 8px 16px;
+            border: 1px solid #ddd;
+            background: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .settings-btn:hover {
+            border-color: #3498db;
+            background: #f8f9fa;
+        }
+
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .checkbox-container:last-child {
+            border-bottom: none;
+        }
+
+        .checkbox-container input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+
+        .checkbox-container label {
+            flex: 1;
+            cursor: pointer;
+            font-size: 14px;
+            color: #333;
+            margin: 0;
+        }
+
+        .checkbox-container small {
+            display: block;
+            color: #666;
+            font-size: 12px;
+            margin-top: 4px;
+        }
+
+        /* ============================================================
+           FEEDBACK BUTTON
+           ============================================================ */
+        .feedback-btn {
+            padding: 8px 16px;
+            background: #27ae60;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .feedback-btn:hover:not(:disabled) {
+            background: #229954;
+        }
+
+        .feedback-btn:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+        }
+
+        /* ============================================================
            MODAL
            ============================================================ */
         .modal {
@@ -644,6 +725,10 @@
                 </div>
                 <div style="display: flex; gap: 10px; align-items: center;">
                     <button id="stopBtn" class="stop-btn" onclick="stopAnalysis()" style="display: none;">⏹ Stop</button>
+                    <button class="settings-btn" onclick="openSettingsModal()">
+                        <span>⚙️</span>
+                        <span>Settings</span>
+                    </button>
                     <div class="mode-selector">
                         <button class="mode-btn active" data-mode="question" onclick="setChatMode('question')">Question</button>
                         <button class="mode-btn" data-mode="refine" onclick="setChatMode('refine')">Refine</button>
@@ -672,8 +757,12 @@
 
         <!-- RIGHT SIDEBAR - ARTIFACTS -->
         <div class="right-sidebar">
-            <div class="artifacts-header">
+            <div class="artifacts-header" style="display: flex; justify-content: space-between; align-items: center;">
                 <h2>Artifacts</h2>
+                <button id="feedbackBtn" class="feedback-btn" onclick="openFeedbackLink()" style="display: none;">
+                    <span>💬</span>
+                    <span>Give Feedback</span>
+                </button>
             </div>
             <div class="artifacts-content" id="artifactsContent">
                 <div class="empty-artifacts">No artifacts yet. Start an analysis to see results.</div>
@@ -711,6 +800,15 @@
                         <label>GitLab Branch (Optional)</label>
                         <input type="text" id="gitlabBranch" placeholder="main" value="main">
                         <small style="color: #666; font-size: 12px;">Branch to push artifacts to (default: main)</small>
+                    </div>
+                    <div class="form-group">
+                        <div class="checkbox-container" style="border: none; padding: 0;">
+                            <input type="checkbox" id="newAnalysisRequireCodeApproval">
+                            <label for="newAnalysisRequireCodeApproval">
+                                Require Code Approval Before Execution
+                                <small>You must review and approve generated code before it runs</small>
+                            </label>
+                        </div>
                     </div>
                     <button type="submit" class="submit-btn">Start Analysis</button>
                 </form>
@@ -808,18 +906,41 @@
         </div>
     </div>
 
+    <!-- SETTINGS MODAL -->
+    <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⚙️ Settings</h2>
+                <button class="close-modal" onclick="closeSettingsModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="checkbox-container">
+                    <input type="checkbox" id="requireCodeApproval" onchange="saveSettings()">
+                    <label for="requireCodeApproval">
+                        Require Code Approval Before Execution
+                        <small>When enabled, you must manually review and approve generated code before it runs</small>
+                    </label>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         // State
         let currentSessionId = null;
         let eventSource = null;
         let chatMode = 'question';
         let artifactsPollInterval = null;
+        let currentFeedbackLink = null;
         const API_BASE = '{{ api_base_url }}';
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             // Check if user has accepted disclaimer
             checkDisclaimer();
+
+            // Load settings
+            loadSettings();
 
             loadSessions();
             setInterval(pollForUpdates, 1000);
@@ -861,10 +982,36 @@
         }
 
         // ====================================================================
+        // SETTINGS
+        // ====================================================================
+
+        function loadSettings() {
+            const requireCodeApproval = localStorage.getItem('requireCodeApproval') === 'true';
+            document.getElementById('requireCodeApproval').checked = requireCodeApproval;
+        }
+
+        function saveSettings() {
+            const requireCodeApproval = document.getElementById('requireCodeApproval').checked;
+            localStorage.setItem('requireCodeApproval', requireCodeApproval.toString());
+        }
+
+        function openSettingsModal() {
+            document.getElementById('settingsModal').classList.add('active');
+        }
+
+        function closeSettingsModal() {
+            document.getElementById('settingsModal').classList.remove('active');
+        }
+
+        // ====================================================================
         // MODAL
         // ====================================================================
 
         function openNewAnalysisModal() {
+            // Pre-fill code approval checkbox with user's saved preference
+            const requireCodeApproval = localStorage.getItem('requireCodeApproval') === 'true';
+            document.getElementById('newAnalysisRequireCodeApproval').checked = requireCodeApproval;
+
             document.getElementById('newAnalysisModal').classList.add('active');
         }
 
@@ -997,10 +1144,14 @@
             clearChat();
 
             try {
+                // Get code approval setting from the checkbox in the modal
+                const requireCodeApproval = document.getElementById('newAnalysisRequireCodeApproval').checked;
+
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('task', task);
                 formData.append('max_iterations', maxIterations);
+                formData.append('require_code_approval', requireCodeApproval.toString());
                 if (gitlabRepo) {
                     formData.append('gitlab_repo', gitlabRepo);
                     if (gitlabBranch) {
@@ -1442,6 +1593,30 @@
             const content = document.getElementById('artifactsContent');
             let html = '';
 
+            // Update feedback button visibility and state
+            const feedbackBtn = document.getElementById('feedbackBtn');
+
+            // Show button if analysis is completed (regardless of whether link is ready)
+            if (status && (status.status === 'completed' || status.status === 'cancelled')) {
+                feedbackBtn.style.display = 'flex';
+
+                // Enable button only if feedback link is available
+                if (status.feedback_link) {
+                    currentFeedbackLink = status.feedback_link;
+                    feedbackBtn.disabled = false;
+                    feedbackBtn.innerHTML = '<span>💬</span><span>Give Feedback</span>';
+                } else {
+                    // Link not ready yet - show disabled state
+                    currentFeedbackLink = null;
+                    feedbackBtn.disabled = true;
+                    feedbackBtn.innerHTML = '<span>⏳</span><span>Preparing Feedback...</span>';
+                }
+            } else {
+                // Analysis not complete yet - hide button
+                currentFeedbackLink = null;
+                feedbackBtn.style.display = 'none';
+            }
+
             const hasAnyArtifacts =
                 (artifacts.reports && artifacts.reports.length > 0) ||
                 (artifacts.reasoning && artifacts.reasoning.length > 0) ||
@@ -1619,6 +1794,16 @@
             } catch (error) {
                 console.error('Error pushing to GitLab:', error);
                 addSystemMessage(`✗ Error pushing to GitLab: ${error.message}`);
+            }
+        }
+
+        // ====================================================================
+        // FEEDBACK
+        // ====================================================================
+
+        function openFeedbackLink() {
+            if (currentFeedbackLink) {
+                window.open(currentFeedbackLink, '_blank');
             }
         }
 
